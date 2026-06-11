@@ -51,7 +51,8 @@ overrides).
 | dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog |
 
 A single `node server/src/index.js` runs everything; the web app is static files served
-by the same process. Optional: a launchd plist to keep it always running.
+by the same process. `scripts/install-launchd.sh` installs it as a macOS launchd user
+agent (starts at login, restarts on crash, logs to `~/Library/Logs/claude-dashboard.log`).
 
 ## 3. UI design
 

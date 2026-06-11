@@ -26,7 +26,8 @@ with user overrides persisted in `~/.claude-dashboard/titles.json`.
   `services/` (sessionRegistry, transcript, customTitles, projects, skills,
   `terminals/` = dispatcher + procEnv + iterm + appleTerminal + tmux), `utils/fsio.js`
 - `web/public/` — `index.html`, `app.js`, `style.css` (no framework, no build step)
-- `scripts/start.sh` — background-start + open browser
+- `scripts/start.sh` — background-start + open browser; `install-launchd.sh` /
+  `uninstall-launchd.sh` — run as a launchd user agent (login start, crash restart)
 - `DESIGN.md` — full design: mockups, status→visual mapping, API contract, trade-offs
 - `README.md` (user-facing, includes platform-support matrix) · `LICENSE` (MIT)
 
