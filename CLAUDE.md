@@ -10,18 +10,21 @@ it is the authoritative component design. Public repo (MIT, see `LICENSE`).
 One zero-dependency Node.js (≥18) process (`server/src/index.js`, port 7777, localhost
 only) reads Claude Code's own state files — `~/.claude/sessions/<pid>.json` (live
 registry: `status: busy|idle|waiting`, `waitingFor`), `~/.claude/projects/<encoded-cwd>/
-<sessionId>.jsonl` (transcripts → starting prompt + action feed), `~/.claude/history.jsonl`
-(recent project dirs), `~/.claude/skills|commands` + `<cwd>/.claude/skills|commands`
-(skill picker) — and pushes snapshots to a vanilla HTML/CSS/JS frontend (`web/public/`)
-over SSE. Interaction (typing into sessions, Esc/digit keys, reading pane contents for
-the terminal mirror, focusing panes, ending sessions, launching new ones) goes through
-AppleScript to iTerm2; each claude process's pane is found via the UUID in its
-`ITERM_SESSION_ID` env var (read with `ps -E`).
+<sessionId>.jsonl` (transcripts → starting prompt + action feed + live token usage),
+`~/.claude/history.jsonl` (recent project dirs), `~/.claude/skills|commands` +
+`<cwd>/.claude/skills|commands` (skill picker) — and pushes snapshots to a vanilla
+HTML/CSS/JS frontend (`web/public/`) over SSE. Interaction (typing into sessions,
+Esc/digit keys, terminal mirror, focus, end, launch) is routed through per-session
+terminal backends in `services/terminals/` — tmux, iTerm2, or Terminal.app, detected
+from the claude process's env (`ps -E`: TMUX / TERM_PROGRAM); unsupported terminals
+render observe-only. Session titles come from the terminal title Claude Code sets,
+with user overrides persisted in `~/.claude-dashboard/titles.json`.
 
 ## Layout
 
 - `server/src/` — `index.js` (entry), `config.js`, `routes/` (api, static),
-  `services/` (sessionRegistry, transcript, iterm, projects, skills), `utils/fsio.js`
+  `services/` (sessionRegistry, transcript, customTitles, projects, skills,
+  `terminals/` = dispatcher + procEnv + iterm + appleTerminal + tmux), `utils/fsio.js`
 - `web/public/` — `index.html`, `app.js`, `style.css` (no framework, no build step)
 - `scripts/start.sh` — background-start + open browser
 - `DESIGN.md` — full design: mockups, status→visual mapping, API contract, trade-offs
@@ -73,6 +76,13 @@ No tests yet. Verify changes by running the server with real live sessions (star
 - `~/.claude/sessions/*.json` is an internal Claude Code format (versioned via its
   `version` field); a Claude Code upgrade may change it — fix `sessionRegistry.js` first.
 - Quick actions assume the standard permission dialog (1=Yes, 2=Yes always, Esc=No).
+- **Backend test coverage is uneven**: iTerm2 is exercised continuously; Terminal.app
+  and tmux backends are implemented to their documented APIs but had no live test
+  environment at the time of writing — verify against a real session before relying
+  on them, and expect the first Terminal.app Esc/raw-key use to trigger a macOS
+  Accessibility permission prompt.
+- In AppleScript, bare `tab` inside a `tell application` block can resolve to the app's
+  tab *class*, not the tab character — use explicit separator strings (bit us once).
 - The registry's `idle` is split into derived `reply`/`done` in `sessionRegistry.js` by
   two heuristics in `transcript.js`: `needsReply()` (question at the end of the last
   message) and `looksLikeDeliverable()` + `lastTurnSideEffect` (document-shaped final

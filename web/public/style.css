@@ -44,6 +44,13 @@ header h1 { font-size: 19px; margin: 0; font-weight: 650; }
 .conn.ok { color: var(--busy); }
 .conn.err { color: var(--waiting); }
 
+.usage-strip {
+  padding: 6px 24px 0;
+  color: var(--dim);
+  font-size: 12px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
 main {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(420px, 1fr));
@@ -124,6 +131,19 @@ main {
 .card[data-status="unknown"] .status-label { background: #8b91a322; color: var(--dim); }
 
 .head-right { display: flex; align-items: center; gap: 8px; flex: none; }
+.rename-btn {
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  font-size: 12px;
+  padding: 2px 4px;
+  cursor: pointer;
+  opacity: 0;
+  flex: none;
+}
+.card:hover .rename-btn { opacity: 1; }
+.rename-btn:hover { color: var(--text); }
+
 .end-btn {
   background: transparent;
   border: 1px solid transparent;
@@ -239,6 +259,9 @@ main {
   z-index: 10;
 }
 .toast-ok { background: #15241f; border-color: var(--busy); color: #9fe8d8; }
+
+.card.readonly .send-form, .card.readonly .quick-actions { opacity: .55; }
+.card.readonly .send-btn, .card.readonly .focus-btn, .card.readonly .qa-btn { cursor: not-allowed; }
 
 /* --- summary bar --- */
 .stats {

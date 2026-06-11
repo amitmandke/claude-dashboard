@@ -10,8 +10,7 @@
  */
 
 const { execFile } = require('child_process');
-
-const itermIdCache = new Map(); // pid -> iTerm2 session UUID
+const procEnv = require('./procEnv');
 
 // keys we can inject for menu/permission prompts
 const KEYS = {
@@ -21,17 +20,9 @@ const KEYS = {
   tab: '\t',
 };
 
-function getItermSessionId(pid) {
-  return new Promise((resolve) => {
-    if (itermIdCache.has(pid)) return resolve(itermIdCache.get(pid));
-    execFile('ps', ['-E', '-p', String(pid), '-o', 'command'], (err, stdout) => {
-      if (err) return resolve(null);
-      const m = stdout.match(/ITERM_SESSION_ID=\S*?([0-9A-F-]{36})/i);
-      const id = m ? m[1] : null;
-      if (id) itermIdCache.set(pid, id);
-      resolve(id);
-    });
-  });
+async function getItermSessionId(pid) {
+  const env = await procEnv.get(pid);
+  return (env && env.itermId) || null;
 }
 
 function runOsa(script, args = []) {
@@ -108,6 +99,32 @@ async function sendKey(pid, key) {
   await sendText(pid, chars, false);
 }
 
+/** All iTerm2 sessions' live titles, keyed by session UUID. Claude Code sets the
+ *  pane title to a generated task summary — the best "logical title" available. */
+async function listSessionTitles() {
+  // NB: inside the iTerm2 tell block, the bare word `tab` resolves to iTerm's
+  // tab *class*, not the tab character — use an explicit separator string.
+  const script = `
+tell application "iTerm2"
+  set out to ""
+  repeat with w in windows
+    repeat with t in tabs of w
+      repeat with s in sessions of t
+        set out to out & (id of s) & "|||" & (name of s) & linefeed
+      end repeat
+    end repeat
+  end repeat
+  return out
+end tell`;
+  const text = await runOsa(script);
+  const titles = new Map();
+  for (const line of text.split('\n')) {
+    const i = line.indexOf('|||');
+    if (i > 0) titles.set(line.slice(0, i), line.slice(i + 3).trim());
+  }
+  return titles;
+}
+
 /** Visible terminal contents of the session's pane — used to mirror permission
  *  dialogs (command + safety warning) that exist only on screen, not in any file. */
 async function readScreen(pid, maxLines = 40) {
@@ -138,7 +155,20 @@ end run`;
 async function closePane(pid) {
   const itermId = await requirePane(pid);
   await expectOk(runOsa(findSessionScript('close s'), [itermId]));
-  itermIdCache.delete(pid);
+}
+
+// title cache: one AppleScript listing serves all sessions for a few seconds
+let titleCache = new Map();
+let titleCacheAt = 0;
+
+async function sessionTitle(pid) {
+  const itermId = await getItermSessionId(pid);
+  if (!itermId) return null;
+  if (Date.now() - titleCacheAt > 5000) {
+    titleCache = await listSessionTitles();
+    titleCacheAt = Date.now();
+  }
+  return titleCache.get(itermId) || null;
 }
 
 /** Bring the session's window/tab/pane to the front. */
@@ -176,4 +206,13 @@ end run`;
   return tty;
 }
 
-module.exports = { sendText, sendKey, focus, closePane, spawnSession, readScreen, sleep };
+module.exports = {
+  sendText,
+  sendKey,
+  focus,
+  closePane,
+  readScreen,
+  sessionTitle,
+  spawnSession,
+  sleep,
+};

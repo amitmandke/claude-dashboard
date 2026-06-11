@@ -38,6 +38,8 @@
     </button>
   </nav>
 
+  <div id="usage-strip" class="usage-strip"></div>
+
   <main id="grid"></main>
 
   <div id="empty" class="empty" hidden>
@@ -52,6 +54,7 @@
         <div class="title-row">
           <span class="status-dot"></span>
           <span class="project"></span>
+          <button class="rename-btn" title="Rename this session (empty reverts to the auto title)">✎</button>
         </div>
         <div class="head-right">
           <span class="status-label"></span>
@@ -63,6 +66,7 @@
         <span class="pid"></span>
         <span class="model"></span>
         <span class="uptime"></span>
+        <span class="tokens" title="context in use · output generated recently"></span>
       </div>
       <div class="prompt">
         <label>Started with</label>

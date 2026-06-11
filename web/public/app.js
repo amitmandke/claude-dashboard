@@ -32,6 +32,13 @@ function fmtTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+function fmtTokens(n) {
+  if (!n) return '0';
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
+  if (n >= 1e3) return Math.round(n / 1e3) + 'k';
+  return String(n);
+}
+
 function shortModel(model) {
   if (!model) return '';
   return model.replace(/^claude-/, '').replace(/-\d{8}$/, '');
@@ -152,6 +159,17 @@ function buildCard(s) {
       input.focus();
     }, '✓ Denied'));
 
+  card.querySelector('.rename-btn').addEventListener('click', async () => {
+    const current = card.querySelector('.project').textContent;
+    const next = prompt('Session title (leave empty to revert to the auto title):', current);
+    if (next === null) return; // cancelled
+    try {
+      await post(`/api/sessions/${s.pid}/title`, { title: next });
+    } catch (err) {
+      toast('Rename failed: ' + err.message);
+    }
+  });
+
   const endBtn = card.querySelector('.end-btn');
   endBtn.addEventListener('click', () => {
     if (!confirm(`End the ${s.project} session and close its pane?`)) return;
@@ -167,7 +185,9 @@ function buildCard(s) {
 function updateCard(card, s, now) {
   const st = s.derivedStatus || s.status;
   card.dataset.status = st;
-  card.querySelector('.project').textContent = s.project;
+  const titleEl = card.querySelector('.project');
+  titleEl.textContent = s.title || s.project;
+  titleEl.title = s.title || s.project;
   card.querySelector('.status-label').textContent =
     st === 'waiting' && s.waitingFor
       ? s.waitingFor
@@ -175,11 +195,14 @@ function updateCard(card, s, now) {
         (s.statusUpdatedAt ? ' · ' + fmtAgo(now - s.statusUpdatedAt) : '');
 
   const cwdEl = card.querySelector('.cwd');
-  cwdEl.textContent = s.cwd;
+  cwdEl.textContent = `${s.project} · ${s.cwd}`;
   cwdEl.title = s.cwd;
   card.querySelector('.pid').textContent = 'pid ' + s.pid;
   card.querySelector('.model').textContent = shortModel(s.model);
   card.querySelector('.uptime').textContent = s.startedAt ? 'up ' + fmtAgo(now - s.startedAt) : '';
+  card.querySelector('.tokens').textContent = s.contextTokens
+    ? `ctx ${fmtTokens(s.contextTokens)} · ↑${fmtTokens(s.recentOutputTokens)}`
+    : '';
 
   card.querySelector('.prompt-text').textContent = s.firstPrompt ? s.firstPrompt.text : '(no prompt yet)';
   renderEvents(card.querySelector('.feed'), s.events || []);
@@ -226,6 +249,16 @@ function updateCard(card, s, now) {
   // show approve/deny only when blocked on a permission-style prompt
   card.querySelector('.quick-actions').hidden = st !== 'waiting';
   card.hidden = activeFilter !== 'all' && st !== activeFilter;
+
+  // observe-only when the hosting terminal has no interaction backend
+  const interactive = !!s.terminal;
+  card.classList.toggle('readonly', !interactive);
+  for (const el of card.querySelectorAll('.send-input, .send-btn, .focus-btn, .qa-btn, .end-btn')) {
+    if (!el.classList.contains('btn-done')) el.disabled = !interactive;
+  }
+  if (!interactive) {
+    card.querySelector('.send-input').placeholder = 'Observe-only — this terminal is not scriptable';
+  }
 }
 
 // ---------------------------------------------------------------- summary bar
@@ -278,6 +311,13 @@ function render(data) {
   empty.hidden = visible > 0;
 
   const counts = updateStats(sessions);
+
+  // live combined usage across the active sessions (recomputed every tick)
+  const ctx = sessions.reduce((a, s) => a + (s.contextTokens || 0), 0);
+  const out = sessions.reduce((a, s) => a + (s.recentOutputTokens || 0), 0);
+  document.getElementById('usage-strip').textContent = sessions.length
+    ? `live usage — context in use: ${fmtTokens(ctx)} tokens across ${sessions.length} session${sessions.length === 1 ? '' : 's'} · recent output: ${fmtTokens(out)} tokens`
+    : '';
 
   // flash the browser tab title when any session needs the user
   const needsAttention = counts.waiting > 0;
