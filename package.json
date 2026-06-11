@@ -1,0 +1,18 @@
+{
+  "name": "claude-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local dashboard to observe and interact with all Claude Code sessions on this machine",
+  "license": "MIT",
+  "author": "Amit Mandke <amitmandke@gmail.com> (https://github.com/amitmandke)",
+  "workspaces": [
+    "server",
+    "web"
+  ],
+  "scripts": {
+    "start": "node server/src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "name": "@claude-dashboard/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Frontend app: vanilla HTML/CSS/JS dashboard served from public/ by the server (no build step)",
+  "license": "MIT"
+}

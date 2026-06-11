@@ -1,0 +1,84 @@
+# Claude Dashboard — project guide
+
+Local web dashboard showing all Claude Code sessions running on this machine: live
+status, action feeds, quick Approve/Deny with a terminal mirror for permission prompts,
+session ending, and a New Session launcher with skill selection. Read `DESIGN.md` first —
+it is the authoritative component design. Public repo (MIT, see `LICENSE`).
+
+## Architecture in one paragraph
+
+One zero-dependency Node.js (≥18) process (`server/src/index.js`, port 7777, localhost
+only) reads Claude Code's own state files — `~/.claude/sessions/<pid>.json` (live
+registry: `status: busy|idle|waiting`, `waitingFor`), `~/.claude/projects/<encoded-cwd>/
+<sessionId>.jsonl` (transcripts → starting prompt + action feed), `~/.claude/history.jsonl`
+(recent project dirs), `~/.claude/skills|commands` + `<cwd>/.claude/skills|commands`
+(skill picker) — and pushes snapshots to a vanilla HTML/CSS/JS frontend (`web/public/`)
+over SSE. Interaction (typing into sessions, Esc/digit keys, reading pane contents for
+the terminal mirror, focusing panes, ending sessions, launching new ones) goes through
+AppleScript to iTerm2; each claude process's pane is found via the UUID in its
+`ITERM_SESSION_ID` env var (read with `ps -E`).
+
+## Layout
+
+- `server/src/` — `index.js` (entry), `config.js`, `routes/` (api, static),
+  `services/` (sessionRegistry, transcript, iterm, projects, skills), `utils/fsio.js`
+- `web/public/` — `index.html`, `app.js`, `style.css` (no framework, no build step)
+- `scripts/start.sh` — background-start + open browser
+- `DESIGN.md` — full design: mockups, status→visual mapping, API contract, trade-offs
+- `README.md` (user-facing, includes platform-support matrix) · `LICENSE` (MIT)
+
+## Run / verify
+
+```bash
+node server/src/index.js          # foreground; http://localhost:7777
+curl -s localhost:7777/api/sessions | python3 -m json.tool   # quick sanity check
+```
+
+No tests yet. Verify changes by running the server with real live sessions (start
+`claude` somewhere) and watching the dashboard.
+
+## Hard rules & conventions
+
+- **Zero npm dependencies.** Do not add packages; use Node builtins only. No build step
+  for the web app either.
+- **Keep `DESIGN.md` current and holistic** on every change: it must describe the latest
+  state as one coherent doc — no changelogs, no "previously/now" framing. After editing,
+  reread the whole doc and fix anything stale (mockups, component tree, API table,
+  future-extensions list).
+- **Keep this CLAUDE.md current** the same way when architecture, layout, or conventions
+  change.
+- **Never guess session state** — always read Claude Code's registry/transcripts. If a
+  field seems missing, inspect the real files under `~/.claude/` before inventing
+  heuristics.
+- Transcript reads must stay bounded (head/tail byte caps in `config.js`) — transcript
+  files grow to many MB.
+- Server binds 127.0.0.1 only; keep it that way (it can type into terminals).
+- **This is a public personal repo**: commits use the repo-local identity
+  (`Amit Mandke <amitmandke@gmail.com>`, already configured) with `git commit -s`,
+  plain commit titles (no Jira prefixes), and no machine-specific paths, project names,
+  or employer references in code, docs, or examples — keep examples generic.
+
+## Known sharp edges
+
+- **Submitting text needs two writes**: Claude Code's TUI treats burst input as a paste
+  and swallows a bundled newline, so `iterm.js` types the text without newline, waits
+  300 ms, then sends Enter separately. Don't "simplify" this back to one write.
+- **Spawn always opens a fresh iTerm2 window** (never a tab in the user's current
+  window — that reads as tabs appearing out of nowhere) and holds a direct reference to
+  the new session: right after creation, "current session of current window" can point
+  elsewhere.
+- **`[hidden] { display:none !important }` is load-bearing** in `style.css`: several
+  elements use `display:flex`, which otherwise overrides the HTML `hidden` attribute and
+  makes "hidden" UI (quick actions, question banner) show permanently.
+- `~/.claude/sessions/*.json` is an internal Claude Code format (versioned via its
+  `version` field); a Claude Code upgrade may change it — fix `sessionRegistry.js` first.
+- Quick actions assume the standard permission dialog (1=Yes, 2=Yes always, Esc=No).
+- The registry's `idle` is split into derived `reply`/`done` in `sessionRegistry.js` by
+  two heuristics in `transcript.js`: `needsReply()` (question at the end of the last
+  message) and `looksLikeDeliverable()` + `lastTurnSideEffect` (document-shaped final
+  message with no mutating action that turn → the deliverable never left the chat).
+  Side-effect matching must stay invocation-shaped (`git push`, `gh pr comment`), never
+  bare word matching — "show PR commits" is read-only. Keep the UI honest by always
+  showing the closing text on `reply` cards.
+- Interaction features are iTerm2-only; observation works with any terminal.
+- First osascript call triggers a one-time macOS "control iTerm2" permission dialog.

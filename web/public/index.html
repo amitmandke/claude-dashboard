@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='80' font-size='80'>🤖</text></svg>">
+</head>
+<body>
+  <header>
+    <h1>Claude Dashboard</h1>
+    <button id="new-session-btn" class="primary-btn">＋ New Session</button>
+    <div id="conn" class="conn">connecting…</div>
+  </header>
+
+  <!-- Summary bar: clickable tiles that filter the grid below -->
+  <nav id="stats" class="stats">
+    <button class="stat" data-filter="all">
+      <span class="stat-num" id="stat-total">–</span>
+      <span class="stat-label">Total sessions</span>
+    </button>
+    <button class="stat stat-waiting" data-filter="waiting">
+      <span class="stat-num" id="stat-waiting">–</span>
+      <span class="stat-label">Need attention</span>
+    </button>
+    <button class="stat stat-reply" data-filter="reply">
+      <span class="stat-num" id="stat-reply">–</span>
+      <span class="stat-label">Awaiting your action</span>
+    </button>
+    <button class="stat stat-done" data-filter="done">
+      <span class="stat-num" id="stat-done">–</span>
+      <span class="stat-label">Turn complete</span>
+    </button>
+    <button class="stat stat-busy" data-filter="busy">
+      <span class="stat-num" id="stat-busy">–</span>
+      <span class="stat-label">Working</span>
+    </button>
+  </nav>
+
+  <main id="grid"></main>
+
+  <div id="empty" class="empty" hidden>
+    No sessions to show.<br>
+    <span>Start one with <code>claude</code> in any terminal, use <b>＋ New Session</b> above,
+    or clear the active filter.</span>
+  </div>
+
+  <template id="card-template">
+    <section class="card">
+      <div class="card-head">
+        <div class="title-row">
+          <span class="status-dot"></span>
+          <span class="project"></span>
+        </div>
+        <div class="head-right">
+          <span class="status-label"></span>
+          <button class="end-btn" title="End this session: interrupt, /exit, close the pane">✕</button>
+        </div>
+      </div>
+      <div class="meta">
+        <span class="cwd" title=""></span>
+        <span class="pid"></span>
+        <span class="model"></span>
+        <span class="uptime"></span>
+      </div>
+      <div class="prompt">
+        <label>Started with</label>
+        <p class="prompt-text"></p>
+      </div>
+      <div class="feed"></div>
+      <div class="pending-question" hidden>
+        <span class="pq-icon">❓</span>
+        <span class="pq-text"></span>
+      </div>
+      <pre class="screen-mirror" hidden></pre>
+      <div class="quick-actions" hidden>
+        <button class="qa-btn qa-approve" title="Selects option 1 (Yes)">✓ Approve</button>
+        <button class="qa-btn qa-always" title="Selects option 2 (Yes, don't ask again)">✓✓ Always</button>
+        <button class="qa-btn qa-deny" title="Sends Esc (No)">✗ Deny</button>
+        <button class="qa-btn qa-edit" title="Sends Esc, then type your guidance below">✎ Deny &amp; redirect</button>
+      </div>
+      <form class="send-form">
+        <input type="text" class="send-input" placeholder="Send a message to this session…" autocomplete="off">
+        <label class="enter-toggle" title="Uncheck to type without pressing Enter (e.g. answer a menu prompt)">
+          <input type="checkbox" class="press-enter" checked>⏎
+        </label>
+        <button type="submit" class="send-btn">Send</button>
+        <button type="button" class="focus-btn" title="Switch to this session's pane in iTerm2">Open in iTerm ↗</button>
+      </form>
+    </section>
+  </template>
+
+  <dialog id="new-session-dialog">
+    <form id="new-session-form">
+      <h2>Start a new Claude session</h2>
+      <label>Project directory
+        <input id="ns-cwd" list="ns-projects" placeholder="/path/to/project" required autocomplete="off">
+        <datalist id="ns-projects"></datalist>
+      </label>
+      <label>Start with a skill <span class="hint">(optional — same as typing /skill in Claude)</span>
+        <select id="ns-skill">
+          <option value="">(none — free-form prompt)</option>
+        </select>
+        <span class="skill-desc hint" id="ns-skill-desc"></span>
+      </label>
+      <label><span id="ns-prompt-label">Initial prompt</span> <span class="hint">(optional)</span>
+        <textarea id="ns-prompt" rows="3" placeholder="What should this session work on?"></textarea>
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="ns-cancel" class="ghost-btn">Cancel</button>
+        <button type="submit" class="primary-btn">Launch in iTerm2</button>
+      </div>
+    </form>
+  </dialog>
+
+  <script src="app.js"></script>
+</body>
+</html>
