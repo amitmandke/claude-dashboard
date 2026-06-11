@@ -33,6 +33,13 @@ exercised daily; Terminal.app and tmux are newer and less battle-tested.
 node server/src/index.js    # then open http://localhost:7777
 ```
 
+To run it as a proper background service (starts at login, restarts on crash):
+
+```bash
+./scripts/install-launchd.sh     # installs a launchd user agent
+./scripts/uninstall-launchd.sh   # stops and removes it
+```
+
 Requires Node.js ≥ 18 (already present — Claude Code runs on it). Interactive features
 need a supported terminal (see the matrix above). The first send/focus/launch triggers a
 one-time macOS automation permission dialog ("…wants to control iTerm2/Terminal") —
