@@ -87,6 +87,8 @@ function collectSessions() {
       lastAssistantTail: parsed.lastAssistantTail,
       // what the session is blocked on (only meaningful while status is "waiting")
       pendingTool: parsed.pendingTool,
+      contextTokens: parsed.contextTokens,
+      recentOutputTokens: parsed.outputTokens,
       events: parsed.events,
       transcriptMtime,
     });

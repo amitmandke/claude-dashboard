@@ -14,13 +14,16 @@ function encodeProjectDir(cwd) {
   return cwd.replace(/[^A-Za-z0-9-]/g, '-');
 }
 
+// '<…>' = command/stdout wrappers; '[Request interrupted…' = harness notices
+const NON_PROMPT_PREFIX = /^(<|\[Request interrupted)/;
+
 function isRealUserPrompt(entry) {
   if (entry.type !== 'user' || entry.isMeta || entry.isSidechain) return false;
   const c = entry.message && entry.message.content;
-  if (typeof c === 'string') return !c.startsWith('<');
+  if (typeof c === 'string') return !NON_PROMPT_PREFIX.test(c);
   if (Array.isArray(c)) {
     const t = c.find((b) => b.type === 'text');
-    return !!t && !t.text.startsWith('<');
+    return !!t && !NON_PROMPT_PREFIX.test(t.text);
   }
   return false;
 }
@@ -102,6 +105,8 @@ function extractEvents(entries) {
   let lastAssistantTail = null; // untruncated end of the last message — where a question would be
   let lastAssistantHead = null; // untruncated start — where a document header would be
   let lastAssistantLen = 0;
+  let contextTokens = 0; // context size at the most recent assistant turn
+  let outputTokens = 0; // output generated within the parsed tail window
   let lastTurnSideEffect = false; // did the current turn land its work anywhere?
   const pendingToolNames = new Map(); // tool_use id -> tool name, to label errors
   const unresolved = new Map(); // tool_use id -> {tool, detail}, deleted when a result arrives
@@ -112,6 +117,12 @@ function extractEvents(entries) {
 
     if (entry.type === 'assistant' && entry.message) {
       if (entry.message.model) model = entry.message.model;
+      const u = entry.message.usage;
+      if (u) {
+        contextTokens =
+          (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+        outputTokens += u.output_tokens || 0;
+      }
       const content = entry.message.content;
       if (!Array.isArray(content)) continue;
       for (const block of content) {
@@ -177,6 +188,8 @@ function extractEvents(entries) {
     lastAssistantLen,
     lastTurnSideEffect,
     pendingTool,
+    contextTokens,
+    outputTokens, // within the tail window only — a recent-activity figure, not a session total
   };
 }
 

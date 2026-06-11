@@ -4,9 +4,10 @@ const fs = require('fs');
 
 const config = require('../config');
 const registry = require('../services/sessionRegistry');
-const iterm = require('../services/iterm');
+const terminals = require('../services/terminals');
 const projects = require('../services/projects');
 const skills = require('../services/skills');
+const customTitles = require('../services/customTitles');
 
 function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -30,25 +31,53 @@ function readBody(req) {
   });
 }
 
+// ---- session titles: Claude Code writes a generated task summary into the
+// terminal title (e.g. "Build session dashboard with monitoring"). Read it via
+// the session's terminal backend; fall back to the first prompt, then the folder.
+
+function cleanTitle(raw) {
+  if (!raw) return null;
+  const t = raw
+    .replace(/^[^\w"'/(]+\s*/, '') // spinner/status glyphs (✳ ⠐ …)
+    .replace(/\s*\((node|claude)\)\s*$/i, '')
+    .trim();
+  // bare app name = no task summary yet
+  return t && !/^claude( code)?$/i.test(t) ? t : null;
+}
+
+async function enrich(sessions) {
+  for (const s of sessions) {
+    s.terminal = await terminals.backendNameFor(s.pid).catch(() => null);
+    s.customTitle = customTitles.get(s.sessionId);
+    s.title =
+      s.customTitle ||
+      cleanTitle(s.terminal ? await terminals.sessionTitle(s.pid) : null) ||
+      (s.firstPrompt && s.firstPrompt.text.slice(0, 80)) ||
+      s.project;
+  }
+}
+
 // ---- SSE: push the session snapshot to all connected dashboards when it changes
 
 const sseClients = new Set();
 let lastSnapshot = '';
 let sseTimer = null;
 
-function snapshotJson() {
-  return JSON.stringify({ sessions: registry.collectSessions(), now: Date.now() });
+async function snapshotJson() {
+  const sessions = registry.collectSessions();
+  await enrich(sessions);
+  return JSON.stringify({ sessions, now: Date.now() });
 }
 
 function ensureSseLoop() {
   if (sseTimer) return;
-  sseTimer = setInterval(() => {
+  sseTimer = setInterval(async () => {
     if (sseClients.size === 0) {
       clearInterval(sseTimer);
       sseTimer = null;
       return;
     }
-    const snap = snapshotJson();
+    const snap = await snapshotJson();
     if (snap === lastSnapshot) return;
     lastSnapshot = snap;
     for (const res of sseClients) res.write(`data: ${snap}\n\n`);
@@ -61,7 +90,7 @@ async function handle(req, res, url) {
   if (!url.pathname.startsWith('/api/')) return false;
 
   if (url.pathname === '/api/sessions' && req.method === 'GET') {
-    json(res, 200, JSON.parse(snapshotJson()));
+    json(res, 200, JSON.parse(await snapshotJson()));
     return true;
   }
 
@@ -71,7 +100,7 @@ async function handle(req, res, url) {
       'Cache-Control': 'no-cache',
       Connection: 'keep-alive',
     });
-    res.write(`data: ${snapshotJson()}\n\n`);
+    res.write(`data: ${await snapshotJson()}\n\n`);
     sseClients.add(res);
     ensureSseLoop();
     req.on('close', () => sseClients.delete(res));
@@ -95,7 +124,7 @@ async function handle(req, res, url) {
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
       return json(res, 400, { error: `not a directory: ${cwd}` }), true;
     }
-    await iterm.spawnSession(cwd, (body.prompt || '').trim());
+    await terminals.spawnSession(cwd, (body.prompt || '').trim());
     json(res, 200, { ok: true });
     return true;
   }
@@ -104,36 +133,48 @@ async function handle(req, res, url) {
   if (screenMatch && req.method === 'GET') {
     const pid = parseInt(screenMatch[1], 10);
     if (!registry.isAlive(pid)) return json(res, 410, { error: 'session process is gone' }), true;
-    json(res, 200, { screen: await iterm.readScreen(pid) });
+    json(res, 200, { screen: await terminals.readScreen(pid) });
+    return true;
+  }
+
+  const titleMatch = url.pathname.match(/^\/api\/sessions\/(\d+)\/title$/);
+  if (titleMatch && req.method === 'POST') {
+    const pid = parseInt(titleMatch[1], 10);
+    const session = registry.collectSessions().find((s) => s.pid === pid);
+    if (!session) return json(res, 410, { error: 'session not found' }), true;
+    const body = await readBody(req);
+    customTitles.set(session.sessionId, body.title);
+    json(res, 200, { ok: true });
     return true;
   }
 
   const m = url.pathname.match(/^\/api\/sessions\/(\d+)\/(send|key|focus|end)$/);
   if (m && req.method === 'POST') {
+    console.log(`[${new Date().toISOString()}] ACTION ${m[2]} pid=${m[1]}`);
     const pid = parseInt(m[1], 10);
     const action = m[2];
     if (!registry.isAlive(pid)) return json(res, 410, { error: 'session process is gone' }), true;
 
     if (action === 'end') {
       // graceful shutdown: interrupt whatever is running, /exit, then close the pane
-      await iterm.sendKey(pid, 'escape');
-      await iterm.sleep(400);
-      await iterm.sendText(pid, '/exit', true);
-      for (let i = 0; i < 14 && registry.isAlive(pid); i++) await iterm.sleep(500);
+      await terminals.sendKey(pid, 'escape');
+      await terminals.sleep(400);
+      await terminals.sendText(pid, '/exit', true);
+      for (let i = 0; i < 14 && registry.isAlive(pid); i++) await terminals.sleep(500);
       if (registry.isAlive(pid)) {
         return json(res, 409, { error: 'session did not exit — it may be mid-task; use Open in iTerm' }), true;
       }
-      await iterm.closePane(pid);
+      await terminals.closePane(pid);
     } else if (action === 'focus') {
-      await iterm.focus(pid);
+      await terminals.focus(pid);
     } else if (action === 'key') {
       const body = await readBody(req);
       if (!body.key) return json(res, 400, { error: 'key is required' }), true;
-      await iterm.sendKey(pid, String(body.key));
+      await terminals.sendKey(pid, String(body.key));
     } else {
       const body = await readBody(req);
       if (!body.text || !body.text.trim()) return json(res, 400, { error: 'text is required' }), true;
-      await iterm.sendText(pid, body.text, body.pressEnter !== false);
+      await terminals.sendText(pid, body.text, body.pressEnter !== false);
     }
     json(res, 200, { ok: true });
     return true;
