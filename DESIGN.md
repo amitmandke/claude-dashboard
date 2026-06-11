@@ -46,10 +46,10 @@ by the same process. Optional: a launchd plist to keep it always running.
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
 │ Claude Dashboard                                          [＋ New Session]        live │
 ├──────────────────────────────────────────────────────────────────────────────────────┤
-│ ┌────────────────┬──────────────────┬─────────────────────────┬───────────────┐      │
-│ │ 4              │ 1                │ 2                       │ 1             │      │
-│ │ Total sessions │ Need attention   │ Done · awaiting input   │ Working       │      │
-│ └────────────────┴──────────────────┴─────────────────────────┴───────────────┘      │
+│ ┌────────────────┬─────────┬────────────────┬──────────────────────┬───────────────┐ │
+│ │ 4              │ 1       │ 1              │ 1                    │ 1             │ │
+│ │ Total sessions │ Working │ Need attention │ Awaiting your action │ Turn complete │ │
+│ └────────────────┴─────────┴────────────────┴──────────────────────┴───────────────┘ │
 │   (tiles are clickable filters — click "Need attention" to see only those cards)      │
 │                                                                                        │
 │ ╔══════════════════════════════════════╗  ┌──────────────────────────────────────┐   │
@@ -121,10 +121,10 @@ also flashes (`🔴 1 waiting — Claude Dashboard`) so you see it from any othe
 Clickable stat tiles, doubling as filters for the grid (click again to clear):
 
 ```
-┌──────────┬────────────────┬─────────────────────┬───────────────┬─────────┐
-│ 4        │ 1              │ 1                   │ 1             │ 1       │
-│ Total    │ Need attention │ Awaiting your reply │ Turn complete │ Working │
-└──────────┴────────────────┴─────────────────────┴───────────────┴─────────┘
+┌──────────┬─────────┬────────────────┬──────────────────────┬───────────────┐
+│ 4        │ 1       │ 1              │ 1                    │ 1             │
+│ Total    │ Working │ Need attention │ Awaiting your action │ Turn complete │
+└──────────┴─────────┴────────────────┴──────────────────────┴───────────────┘
 ```
 
 ### Quick actions (shown only on a `waiting` card)
