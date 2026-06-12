@@ -497,6 +497,21 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
   }, '✓ Launched');
 });
 
+// ---------------------------------------------------------------- theme toggle
+
+// a head-inline script applies the saved theme before the stylesheet loads
+// (no flash); this just keeps the button face in sync and handles clicks
+const themeBtn = document.getElementById('theme-toggle');
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  localStorage.theme = theme;
+  themeBtn.textContent = theme === 'dark' ? '🌙' : '☀️';
+  themeBtn.title = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+}
+applyTheme(localStorage.theme || 'dark');
+themeBtn.addEventListener('click', () =>
+  applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+
 // ---------------------------------------------------------------- live connection
 
 function connect() {

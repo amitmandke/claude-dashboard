@@ -83,6 +83,10 @@ No tests yet. Verify changes by running the server with real live sessions (star
 - **`[hidden] { display:none !important }` is load-bearing** in `style.css`: several
   elements use `display:flex`, which otherwise overrides the HTML `hidden` attribute and
   makes "hidden" UI (quick actions, question banner) show permanently.
+- **Never hardcode a color in a CSS rule** — every color lives in a `:root` variable
+  with a counterpart under `[data-theme="light"]`; a hardcoded color silently breaks
+  the light theme. Exception by design: the terminal-mirror vars stay dark in both
+  themes (it mirrors a real terminal pane).
 - `~/.claude/sessions/*.json` is an internal Claude Code format (versioned via its
   `version` field); a Claude Code upgrade may change it — fix `sessionRegistry.js` first.
 - Quick actions assume the standard permission dialog (1=Yes, 2=Yes always, Esc=No).
