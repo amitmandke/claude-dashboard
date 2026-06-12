@@ -9,6 +9,7 @@ const projects = require('../services/projects');
 const skills = require('../services/skills');
 const customTitles = require('../services/customTitles');
 const aiTitles = require('../services/aiTitles');
+const transcript = require('../services/transcript');
 
 function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -141,6 +142,19 @@ async function handle(req, res, url) {
     const pid = parseInt(screenMatch[1], 10);
     if (!registry.isAlive(pid)) return json(res, 410, { error: 'session process is gone' }), true;
     json(res, 200, { screen: await terminals.readScreen(pid) });
+    return true;
+  }
+
+  // full text of one assistant message (feed entries are truncated to 200 chars
+  // to keep SSE light) — fetched on demand when the user opens the reply popup
+  const textMatch = url.pathname.match(/^\/api\/sessions\/(\d+)\/text$/);
+  if (textMatch && req.method === 'GET') {
+    const pid = parseInt(textMatch[1], 10);
+    const session = registry.collectSessions().find((s) => s.pid === pid);
+    if (!session) return json(res, 410, { error: 'session not found' }), true;
+    const at = url.searchParams.get('at');
+    if (!at) return json(res, 400, { error: 'at is required' }), true;
+    json(res, 200, { text: transcript.assistantTextAt(session.transcriptPath, at) });
     return true;
   }
 

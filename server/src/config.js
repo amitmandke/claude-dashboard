@@ -22,6 +22,7 @@ module.exports = {
   TAIL_BYTES: 512 * 1024, // transcript tail parsed for the event feed
   HEAD_BYTES: 256 * 1024, // transcript head scanned for the first prompt
   MAX_EVENTS: 40,         // events per session sent to the UI
+  FULL_TEXT_BYTES: 64 * 1024, // cap for the on-demand full-message endpoint
 
   SSE_INTERVAL_MS: 1500,  // how often the SSE loop polls for changes
 
