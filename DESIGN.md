@@ -104,7 +104,7 @@ the fact.
 | Terminal mirror | the bottom ~40 lines of the session's actual pane while `waiting` — the permission dialog exactly as rendered, including the command and Claude Code's safety warning ("this command changes directory before running git…"), which exist only on screen, not in any file | fetched from iTerm2 (`text of session`) once per waiting episode; hidden otherwise |
 | Quick actions | Approve / Always / Deny / Deny-&-redirect | only visible while the card is `waiting` |
 | Composer | text input + ⏎ toggle + Send + ⎋ Esc + Open in iTerm ↗ | see interactions below; ⎋ Esc sends a bare Esc — interrupts the running turn or dismisses a menu (always available, unlike Deny which only shows while `waiting`); lights up red while the session is `busy` (there's a turn to interrupt), dull gray otherwise |
-| End (✕ in header) | interrupt (Esc) → `/exit` → wait for process exit → close the iTerm pane | confirmation asked; refuses (409) if the session won't exit |
+| End (✕ in header) | interrupt (Esc) → `/exit` → wait for process exit → close the iTerm pane | ending kills the session's context, so confirmation is status-aware: `done` closes silently (nothing to lose); `busy`/`waiting`/`reply` confirm with a message naming what would be lost (in-progress turn, pending approval, unanswered question); refuses (409) if the session won't exit |
 
 Every action button follows the same lifecycle: pressed-down scale on click, dimmed +
 disabled while the request is in flight, a brief green "✓ done" state on success, then
@@ -174,7 +174,7 @@ count is above zero:
 8. **One-click permission handling** — flashing cards show Approve / Always / Deny / Deny-&-redirect buttons that inject the matching keystrokes.
 9. **Start a new session from the UI** — ＋ New Session opens a dialog with a recent-projects picker (from `~/.claude/history.jsonl`), an optional **skill picker** (user + project skills/commands, like typing `/` in Claude; the prompt field becomes the skill's arguments), and an optional initial prompt (Enter launches, Shift+Enter inserts a newline, matching Claude Code's composer); the server opens a **new iTerm2 window**, `cd`s there, runs `claude "<prompt>"` (e.g. `claude "/review-pr 1234"`), and the new card appears on the dashboard within seconds (the session registers itself).
 10. **Triage by status** — summary tiles filter the grid to just waiting / reply / done / busy sessions.
-11. **End a session** — ✕ on the card (with confirmation) interrupts, sends `/exit`, and closes the pane once the process exits.
+11. **End a session** — ✕ on the card interrupts, sends `/exit`, and closes the pane once the process exits. A `done` card closes without asking; a working/blocked/awaiting card asks for confirmation first, since ending terminates the session's context and in-progress work.
 12. **Rename a session** — ✎ next to the title; empty input reverts to the auto title.
 13. **Watch live usage** — a strip under the summary tiles totals context-in-use and recent output tokens across active sessions (recomputed from transcripts every tick, no persisted/stale stats); each card shows its own `ctx · ↑output`.
 14. **Observe-only degradation** — sessions in unscriptable terminals keep full observation; their composer/buttons are disabled with an explanatory placeholder.

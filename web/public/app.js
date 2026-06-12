@@ -218,9 +218,21 @@ function buildCard(s) {
     }
   });
 
+  // Ending terminates the claude process — its context and any in-progress work
+  // are gone. A fully complete turn (`done`) is safe to close without asking;
+  // every other state gets a confirmation that says what would be lost.
+  const END_WARNINGS = {
+    busy: (p) => `${p} is STILL WORKING — ending now kills the running turn and loses its in-progress work. End it anyway?`,
+    waiting: (p) => `${p} is waiting on your approval — ending now terminates the session and its context. End it anyway?`,
+    reply: (p) => `${p} is awaiting your input — ending now terminates the session and its context. End it anyway?`,
+  };
   const endBtn = card.querySelector('.end-btn');
   endBtn.addEventListener('click', () => {
-    if (!confirm(`End the ${s.project} session and close its pane?`)) return;
+    const st = card.dataset.status; // live status, not the build-time snapshot
+    if (st !== 'done') {
+      const msg = (END_WARNINGS[st] || ((p) => `End the ${p} session and close its pane?`))(s.project);
+      if (!confirm(msg)) return;
+    }
     withFeedback(endBtn, 'End failed', async () => {
       await post(`/api/sessions/${s.pid}/end`);
       toast('Session ended', true);

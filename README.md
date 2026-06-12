@@ -82,7 +82,7 @@ click OK; Terminal.app raw keys additionally need Accessibility permission.
 | Answer a menu without submitting | untick the ⏎ toggle, send raw keys like `1` |
 | Jump to the terminal | **Open in iTerm ↗** — raises that exact iTerm2 pane |
 | Start a new session | **＋ New Session** — pick a recent project dir, optionally a **skill** (like typing `/my-skill` in Claude, with your prompt as its arguments), and an initial prompt; launches `claude` in a new terminal window and the card appears automatically |
-| End a session | **✕** on the card — interrupts, sends `/exit`, closes the pane (asks for confirmation) |
+| End a session | **✕** on the card — interrupts, sends `/exit`, closes the pane. Turn-complete cards close without asking; working/blocked cards confirm first (ending loses the session's context) |
 | Rename a session | **✎** next to the title — empty input reverts to the auto title |
 
 ## How it works
