@@ -4,6 +4,7 @@ const path = require('path');
 const os = require('os');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+const DATA_DIR = path.join(os.homedir(), '.claude-dashboard');
 
 module.exports = {
   PORT: parseInt(process.env.PORT || '7777', 10),
@@ -23,4 +24,15 @@ module.exports = {
   MAX_EVENTS: 40,         // events per session sent to the UI
 
   SSE_INTERVAL_MS: 1500,  // how often the SSE loop polls for changes
+
+  // dashboard's own data dir (custom titles, AI title cache) — never write into ~/.claude
+  DATA_DIR,
+
+  // AI-derived session titles via headless `claude -p` (uses the user's Claude
+  // subscription; no API key). Disable with CLAUDE_DASH_AI_TITLES=0.
+  AI_TITLES: process.env.CLAUDE_DASH_AI_TITLES !== '0',
+  AI_TITLE_MODEL: process.env.CLAUDE_DASH_AI_TITLE_MODEL || 'haiku',
+  CLAUDE_BIN: process.env.CLAUDE_DASH_CLAUDE_BIN || 'claude',
+  // headless runs execute here so the registry can recognize and hide them
+  HEADLESS_CWD: path.join(DATA_DIR, 'headless'),
 };

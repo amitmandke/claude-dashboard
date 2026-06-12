@@ -8,6 +8,7 @@ const terminals = require('../services/terminals');
 const projects = require('../services/projects');
 const skills = require('../services/skills');
 const customTitles = require('../services/customTitles');
+const aiTitles = require('../services/aiTitles');
 
 function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -31,9 +32,10 @@ function readBody(req) {
   });
 }
 
-// ---- session titles: Claude Code writes a generated task summary into the
-// terminal title (e.g. "Build session dashboard with monitoring"). Read it via
-// the session's terminal backend; fall back to the first prompt, then the folder.
+// ---- session titles, in precedence order: the user's ✎ custom title; the
+// AI-derived title (headless `claude -p` summarizing the whole feed — see
+// aiTitles.js); the terminal title Claude Code sets (a summary of only the
+// latest exchange); the first prompt; the folder name.
 
 function cleanTitle(raw) {
   if (!raw) return null;
@@ -49,8 +51,11 @@ async function enrich(sessions) {
   for (const s of sessions) {
     s.terminal = await terminals.backendNameFor(s.pid).catch(() => null);
     s.customTitle = customTitles.get(s.sessionId);
+    aiTitles.requestRefresh(s); // async; the title lands in a later snapshot
+    s.aiTitle = aiTitles.get(s.sessionId);
     s.title =
       s.customTitle ||
+      s.aiTitle ||
       cleanTitle(s.terminal ? await terminals.sessionTitle(s.pid) : null) ||
       (s.firstPrompt && s.firstPrompt.text.slice(0, 80)) ||
       s.project;

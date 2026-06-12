@@ -55,8 +55,9 @@ creating the window — creating a window mid-launch fails with opaque AppleEven
 A single `node server/src/index.js` runs everything; the web app is static files served
 by the same process. `scripts/install-launchd.sh` installs it as a macOS launchd user
 agent (starts at login, restarts on crash, logs to `~/Library/Logs/claude-dashboard.log`).
-The log records every interaction (`ACTION send|key|focus|end|spawn …`) and every failed
-request (`ERROR <method> <path>: <message>`), so misbehavior is diagnosable after the fact.
+The log records every interaction (`ACTION send|key|focus|end|spawn|ai-title …`) and every
+failed request (`ERROR <method> <path>: <message>`), so misbehavior is diagnosable after
+the fact.
 
 ## 3. UI design
 
@@ -94,7 +95,7 @@ request (`ERROR <method> <path>: <message>`), so misbehavior is diagnosable afte
 
 | Zone | Content | Behavior |
 |---|---|---|
-| Header | status dot + **session title** + rename (✎) + status badge | title auto-derives from the terminal title Claude Code sets (a live task summary), falling back to the first prompt, then folder name; ✎ sets a custom title (persisted in `~/.claude-dashboard/titles.json` by sessionId; empty reverts) |
+| Header | status dot + **session title** + rename (✎) + status badge | title precedence: ✎ custom title (persisted in `~/.claude-dashboard/titles.json` by sessionId; empty reverts) → AI-derived title (see below) → the terminal title Claude Code sets → the first prompt → folder name |
 | Meta row | project · full cwd, pid, model, uptime, `ctx <n> · ↑<n>` live tokens | monospace, subdued |
 | "Started with" | first real user prompt of the session | clamped to 3 lines; click to expand |
 | Activity feed | last 40 actions: tool calls (`⚙ Bash — run pytest`), your prompts — including skill/slash-command invocations, rendered as `/review-pr 1234` — Claude's replies, tool errors (`✗`) | auto-scrolls to newest unless you scrolled up |
@@ -190,6 +191,7 @@ server/src/
 │   ├── sessionRegistry.js    scan ~/.claude/sessions, liveness-check pids, enrich, sort
 │   ├── transcript.js         JSONL parsing: first prompt, action feed, model, tokens
 │   ├── customTitles.js       user-set titles (~/.claude-dashboard/titles.json)
+│   ├── aiTitles.js           AI-derived titles via headless `claude -p` (cache: ai-titles.json)
 │   ├── projects.js           recent project dirs from ~/.claude/history.jsonl
 │   ├── skills.js             skill/command discovery (~/.claude + <cwd>/.claude)
 │   └── terminals/
@@ -239,6 +241,7 @@ submitting it. Typing first and sending Enter after a short pause submits reliab
 - **Pluggable terminal backends, detected per session** — each session is routed by what actually hosts it (its env), so mixed setups (some sessions in iTerm2, some in tmux) work simultaneously. Unsupported terminals degrade to observe-only cards rather than failing clicks.
 - **tmux as the portability path** — the tmux backend uses only the tmux CLI, so it carries interaction to Linux/WSL and any host terminal.
 - **Live usage from transcripts, not persisted stats** — `~/.claude/stats-cache.json` lags by up to a day; the dashboard computes context-in-use and recent output from the live transcript tails instead. Recent-output is the tail window's sum, not a lifetime total (kept bounded by design), and is summed per API message id — the transcript repeats the same `usage` on every content-block line of one response, so a per-line sum would inflate 3-5×. Plan limits aren't persisted locally by Claude Code, so they are deliberately not shown.
+- **AI-derived titles via headless `claude -p`, not the API** — the terminal title Claude Code writes summarizes only the *latest exchange*, so a side question ("is it stuck?") renames a PR-review session. `aiTitles.js` instead feeds the starting prompt plus the recent activity feed to Claude and asks for the session's *primary task*, weighing sustained activity over the last message. It shells out to `claude -p --model haiku` (draws on the user's existing subscription; no Console account or `ANTHROPIC_API_KEY` required) rather than calling the API. Cost controls: regenerate only when a session gains a new user turn (tracked by a per-session turn key, cached with the title in `~/.claude-dashboard/ai-titles.json`), one generation at a time, 2-minute back-off after failures, 90s timeout. Headless runs execute in `~/.claude-dashboard/headless` with a `CLAUDE_DASH_INTERNAL=1` env marker; the session registry skips any registry entry with that cwd, so the dashboard's own workers never show up as cards. Opt out with `CLAUDE_DASH_AI_TITLES=0`; on any failure the title chain silently falls back to the terminal title.
 - **Subagent (sidechain) events filtered out** of the feed — keeps the action feed readable; the main-chain Agent tool call still shows.
 - **`reply` vs `done` is a heuristic** — question detection plus the undelivered-deliverable check. Side-effect matching is deliberately invocation-shaped (`git push`, `gh pr comment`) rather than word-shaped: "show PR commits" must not count as a delivery. It can still misclassify; the cost of an error is just a wrong tile/animation, and the banner shows the actual closing text so the user can judge.
 
