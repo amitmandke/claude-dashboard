@@ -98,9 +98,9 @@ the fact.
 | Header | status dot + **session title** + rename (✎) + status badge | title precedence: ✎ custom title (persisted in `~/.claude-dashboard/titles.json` by sessionId; empty reverts) → AI-derived title (see below) → the terminal title Claude Code sets → the first prompt → folder name |
 | Meta row | project · full cwd, pid, model, uptime, `ctx <n> · ↑<n>` live tokens | monospace, subdued |
 | "Started with" | first real user prompt of the session | clamped to 3 lines; click to expand |
-| Activity feed | last 40 actions: tool calls (`⚙ Bash — run pytest`), your prompts — including skill/slash-command invocations, rendered as `/review-pr 1234` — Claude's replies, tool errors (`✗`) | auto-scrolls to newest unless you scrolled up |
+| Activity feed | last 40 actions: tool calls (`⚙ Bash — run pytest`), your prompts — including skill/slash-command invocations, rendered as `/review-pr 1234` — Claude's replies, tool errors (`✗`) | auto-scrolls to newest unless you scrolled up; **Claude entries are clickable** — feed text is truncated to 200 chars, clicking fetches the complete message on demand (`/text?at=`) and renders it as markdown in a scrollable popup (`md.js`, a minimal zero-dep renderer; input HTML-escaped) |
 | Live progress line | the spinner line Claude Code renders in the pane while working — `✽ Germinating… (1m 57s · ↓ 6.7k tokens)` — so a `busy` card shows the same motion you'd see in the terminal | polled from the pane (`/screen`) every ~2s while `busy`, matched by glyph + gerund + `(stats)` shape (not by "esc to interrupt", which the shortcut-hint bar also contains); breathing teal; hidden for other statuses |
-| Question banner | one compact line (full text on hover): for `waiting` — the pending tool call with the **literal command** (`wants to run Bash — cd /repo && git log…`) or AskUserQuestion text, in red; for `reply` — Claude's closing question, in amber | hidden for `done`/`busy`; pending tool = most recent tool call with no result in the transcript |
+| Question banner | one compact line (full text on hover): for `waiting` — the pending tool call with the **literal command** (`wants to run Bash — cd /repo && git log…`) or AskUserQuestion text, in red; for `reply` — Claude's closing question, in amber | hidden for `done`/`busy`; pending tool = most recent tool call with no result in the transcript; clicking the amber banner opens the full-reply markdown popup |
 | Terminal mirror | the bottom ~40 lines of the session's actual pane while `waiting` — the permission dialog exactly as rendered, including the command and Claude Code's safety warning ("this command changes directory before running git…"), which exist only on screen, not in any file | fetched from iTerm2 (`text of session`) once per waiting episode; hidden otherwise |
 | Quick actions | Approve / Always / Deny / Deny-&-redirect | only visible while the card is `waiting` |
 | Composer | text input + ⏎ toggle + Send + ⎋ Esc + Open in iTerm ↗ | see interactions below; ⎋ Esc sends a bare Esc — interrupts the running turn or dismisses a menu (always available, unlike Deny which only shows while `waiting`); lights up red while the session is `busy` (there's a turn to interrupt), dull gray otherwise |
@@ -166,6 +166,7 @@ count is above zero:
 1. **Glance** — open `http://localhost:7777`; every live session appears as a card within ~1.5s, updating live over SSE (no refresh ever needed).
 2. **Spot trouble** — a session that needs you flashes red (permission prompt) or pulses amber (turn finished, waiting for your next prompt). Tab title flashes too.
 3. **Read the story** — each card shows where the session runs (cwd), what prompt started it, and a scrolling feed of every action: tools used, files touched, commands run, errors hit, what Claude last said.
+   **Read a full reply** — click any Claude entry in the feed (or the amber reply banner) to open the complete message, rendered as markdown in a scrollable popup (close: ✕, Esc, or click outside).
 4. **Reply without switching windows** — type in the composer, hit Send → the text is typed into that session's iTerm2 pane and submitted.
 5. **Answer menus/permission prompts** — untick the ⏎ toggle to send raw characters without Enter (e.g. `1` to choose an option).
 6. **Jump to the terminal** — "Open in iTerm ↗" raises that exact iTerm2 tab/pane for full manual control.
@@ -214,6 +215,7 @@ server/src/
 | `/api/sessions/:pid/key` | POST `{key}` | inject a key: `1`, `2`, `escape`, `enter`, `up`, `down`, `tab` |
 | `/api/sessions/:pid/focus` | POST | raise the pane in iTerm2 |
 | `/api/sessions/:pid/screen` | GET | bottom of the pane's visible text (terminal mirror) |
+| `/api/sessions/:pid/text?at=` | GET | full text of the assistant message at that transcript timestamp (feed entries are truncated to 200 chars to keep SSE light) |
 | `/api/sessions/:pid/title` | POST `{title}` | set a custom title; empty clears the override |
 | `/api/sessions/:pid/end` | POST | Esc → `/exit` → close pane; 409 if the session won't exit |
 | `/api/projects` | GET | recent project dirs for the New Session picker |

@@ -120,6 +120,16 @@
     </form>
   </dialog>
 
+  <!-- full-reply popup: opened by clicking a Claude entry in a feed or the reply banner -->
+  <dialog id="md-dialog" class="md-dialog">
+    <div class="md-head">
+      <span id="md-title"></span>
+      <button id="md-close" class="ghost-btn" title="Close (Esc)">✕</button>
+    </div>
+    <div id="md-body" class="md-body"></div>
+  </dialog>
+
+  <script src="md.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

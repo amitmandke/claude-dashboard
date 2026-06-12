@@ -64,7 +64,9 @@ click OK; Terminal.app raw keys additionally need Accessibility permission.
   - ⚪ `done` (turn fully complete, nothing pending) → calm card, no animation
   - 🟢 `busy` (working) → calm card, breathing dot
 - Per card: project, full cwd, pid, model, uptime, the **starting prompt** (click to
-  expand), and a live **activity feed** of tool calls, errors, prompts, and replies.
+  expand), and a live **activity feed** of tool calls, errors, prompts, and replies —
+  click any Claude reply (or the amber banner) to read the **full message in a
+  scrollable popup, rendered as markdown**.
 - A `waiting` card also shows **the pending question** — the exact command awaiting
   permission (`❓ wants to run Bash — cd /repo && git push…`) or the question Claude
   asked — plus a **terminal mirror**: the bottom of the actual pane, so you see the

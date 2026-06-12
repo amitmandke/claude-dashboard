@@ -91,9 +91,34 @@ async function withFeedback(btn, errPrefix, fn, doneLabel) {
   }
 }
 
+// ---- full-reply popup: feed entries are truncated to 200 chars server-side,
+// so the popup fetches the complete message on demand and renders it as markdown
+const mdDialog = document.getElementById('md-dialog');
+const mdTitle = document.getElementById('md-title');
+const mdBody = document.getElementById('md-body');
+document.getElementById('md-close').addEventListener('click', () => mdDialog.close());
+mdDialog.addEventListener('click', (e) => { if (e.target === mdDialog) mdDialog.close(); }); // backdrop
+
+function showReply(title, fallbackText, pid, at) {
+  mdTitle.textContent = title;
+  mdBody.innerHTML = renderMarkdown(fallbackText || '');
+  mdBody.scrollTop = 0;
+  mdDialog.showModal();
+  if (pid == null || !at) return;
+  fetch(`/api/sessions/${pid}/text?at=${encodeURIComponent(at)}`)
+    .then((r) => r.json())
+    .then(({ text }) => {
+      if (text && mdDialog.open) {
+        mdBody.innerHTML = renderMarkdown(text);
+        mdBody.scrollTop = 0;
+      }
+    })
+    .catch(() => {}); // fallback (truncated) text is already showing
+}
+
 const EVT_TAGS = { user: 'you', assistant: 'claude' };
 
-function renderEvents(feedEl, events) {
+function renderEvents(feedEl, events, s) {
   // keep scroll pinned to bottom unless the user scrolled up
   const pinned = feedEl.scrollHeight - feedEl.scrollTop - feedEl.clientHeight < 30;
   feedEl.innerHTML = '';
@@ -108,6 +133,11 @@ function renderEvents(feedEl, events) {
     const detail = document.createElement('span');
     detail.className = 'detail';
     detail.textContent = e.detail || e.text || '';
+    if (e.kind === 'assistant') {
+      row.classList.add('evt-click');
+      row.title = 'Click to read the full reply';
+      row.addEventListener('click', () => showReply(s.title || s.project, e.text, s.pid, e.at));
+    }
     row.append(time, tag, detail);
     feedEl.appendChild(row);
   }
@@ -144,6 +174,15 @@ function buildCard(s) {
 
   card.querySelector('.prompt-text').addEventListener('click', (e) => {
     e.target.classList.toggle('expanded');
+  });
+
+  // the amber reply banner shows a clamped tail — click opens the full reply
+  card.querySelector('.pending-question').addEventListener('click', () => {
+    if (card.dataset.status !== 'reply' || !lastData) return;
+    const cur = lastData.sessions.find((x) => x.pid === s.pid);
+    if (!cur) return;
+    const lastReply = [...(cur.events || [])].reverse().find((e) => e.kind === 'assistant');
+    showReply(cur.title || cur.project, cur.lastAssistantText, cur.pid, lastReply && lastReply.at);
   });
 
   // quick actions for permission prompts
@@ -222,7 +261,7 @@ function updateCard(card, s, now) {
     : '';
 
   card.querySelector('.prompt-text').textContent = s.firstPrompt ? s.firstPrompt.text : '(no prompt yet)';
-  renderEvents(card.querySelector('.feed'), s.events || []);
+  renderEvents(card.querySelector('.feed'), s.events || [], s);
 
   // when blocked or awaiting a reply, show what the session is actually asking
   const pq = card.querySelector('.pending-question');

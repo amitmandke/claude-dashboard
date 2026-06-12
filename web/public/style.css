@@ -448,3 +448,65 @@ dialog input, dialog textarea {
 }
 dialog input:focus, dialog textarea:focus { border-color: var(--accent); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+
+/* --- full-reply popup (markdown-rendered, scrollable) --- */
+.evt-click { cursor: pointer; }
+.evt-click:hover .detail { color: var(--text); text-decoration: underline dotted #4ec9b088; }
+.pending-question.pq-amber { cursor: pointer; }
+.pending-question.pq-amber:hover { border-color: #e2b34a; }
+
+.md-dialog {
+  width: 760px;
+  max-width: 92vw;
+  padding: 0;
+}
+.md-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--card-edge);
+  font-weight: 650;
+  font-size: 14px;
+}
+.md-body {
+  padding: 6px 18px 18px;
+  max-height: 72vh;
+  overflow-y: auto;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.md-body h3, .md-body h4, .md-body h5, .md-body h6 { margin: 16px 0 6px; line-height: 1.3; }
+.md-body h3 { font-size: 15px; }
+.md-body h4 { font-size: 14px; }
+.md-body p { margin: 8px 0; }
+.md-body code {
+  background: #12141b;
+  border: 1px solid var(--card-edge);
+  border-radius: 4px;
+  padding: 1px 5px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+}
+.md-body pre {
+  background: #0a0c10;
+  border: 1px solid var(--card-edge);
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.md-body pre code { background: none; border: none; padding: 0; }
+.md-body ul, .md-body ol { margin: 8px 0; padding-left: 24px; }
+.md-body li { margin: 3px 0; }
+.md-body blockquote {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--card-edge);
+  color: var(--dim);
+}
+.md-body table { border-collapse: collapse; margin: 10px 0; font-size: 12px; }
+.md-body th, .md-body td { border: 1px solid var(--card-edge); padding: 5px 10px; text-align: left; }
+.md-body th { background: #12141b; }
+.md-body hr { border: none; border-top: 1px solid var(--card-edge); margin: 14px 0; }
+.md-body a { color: #6fa8ff; }
