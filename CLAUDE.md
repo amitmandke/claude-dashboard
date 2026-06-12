@@ -96,5 +96,13 @@ No tests yet. Verify changes by running the server with real live sessions (star
   Side-effect matching must stay invocation-shaped (`git push`, `gh pr comment`), never
   bare word matching — "show PR commits" is read-only. Keep the UI honest by always
   showing the closing text on `reply` cards.
+- **Terminal titles summarize the latest exchange, not the session's main task** —
+  Claude Code retitles the window after the most recent prompt, so a side question
+  ("is it stuck?") renames a PR-review session to "Investigate stuck issue". That is
+  upstream behavior, not dashboard staleness; the ✎ custom title is the remedy. Don't
+  "fix" it by guessing the real task from transcripts.
+- **Transcript `usage` repeats per line**: one assistant API response becomes several
+  jsonl lines (one per content block), each carrying the same `message.usage`. Sum
+  token counts per `message.id`, never per line — a per-line sum overcounts 3-5×.
 - Interaction features are iTerm2-only; observation works with any terminal.
 - First osascript call triggers a one-time macOS "control iTerm2" permission dialog.
