@@ -10,6 +10,24 @@ function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/* Lightweight syntax tinting for fenced code — one pass, one combined regex, so
+ * comments and strings take precedence and tokens never nest. Input is already
+ * HTML-escaped (quotes survive escapeHtml, which only touches & < >). */
+const HL_TOKEN = new RegExp(
+  '(\\/\\*[\\s\\S]*?\\*\\/|\\/\\/[^\\n]*|#[^\\n]*)' + // comment
+  '|("(?:[^"\\\\\\n]|\\\\.)*"|\'(?:[^\'\\\\\\n]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)' + // string
+  '|\\b(\\d+(?:\\.\\d+)?)\\b' + // number
+  '|\\b(const|let|var|function|return|if|else|for|while|switch|case|break|continue|class|new|this|import|export|from|async|await|try|catch|finally|throw|typeof|def|self|None|True|False|elif|lambda|null|undefined|true|false|public|private|protected|static|void|int|long|boolean|final|interface|type|struct|func|go|defer|package|chan|map|range|nil|err)\\b', // keyword
+  'g'
+);
+
+function highlight(code) {
+  return code.replace(HL_TOKEN, (m, com, str, num, kw) => {
+    const cls = com ? 'hl-com' : str ? 'hl-str' : num ? 'hl-num' : 'hl-kw';
+    return '<span class="' + cls + '">' + m + '</span>';
+  });
+}
+
 /* Inline spans. Order matters: code first so its contents are left verbatim. */
 function inline(s) {
   const codes = [];
@@ -57,7 +75,8 @@ function renderMarkdown(src) {
       flushAll();
       const body = [];
       while (++i < lines.length && !/^\s*```/.test(lines[i])) body.push(lines[i]);
-      out.push('<pre><code>' + body.join('\n') + '</code></pre>');
+      const lang = fence[1] ? ' data-lang="' + fence[1] + '"' : '';
+      out.push('<pre' + lang + '><code>' + highlight(body.join('\n')) + '</code></pre>');
       continue;
     }
 

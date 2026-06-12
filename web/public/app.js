@@ -133,12 +133,16 @@ function renderEvents(feedEl, events, s) {
     const detail = document.createElement('span');
     detail.className = 'detail';
     detail.textContent = e.detail || e.text || '';
+    row.append(time, tag, detail);
     if (e.kind === 'assistant') {
       row.classList.add('evt-click');
-      row.title = 'Click to read the full reply';
+      row.title = 'Open the full reply';
       row.addEventListener('click', () => showReply(s.title || s.project, e.text, s.pid, e.at));
+      const pop = document.createElement('span');
+      pop.className = 'evt-pop';
+      pop.textContent = '⤢';
+      row.appendChild(pop);
     }
-    row.append(time, tag, detail);
     feedEl.appendChild(row);
   }
   if (pinned) feedEl.scrollTop = feedEl.scrollHeight;
