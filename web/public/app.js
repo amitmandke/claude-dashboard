@@ -497,15 +497,44 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
   }, '✓ Launched');
 });
 
+// ---------------------------------------------------------------- theme toggle
+
+// Three modes: auto (follow the OS appearance, live — handles scheduled
+// day/night switching), light, dark. No stored value = auto; an explicit
+// choice pins and persists. A head-inline script applies the resolved theme
+// before the stylesheet loads (no flash); this keeps the button in sync.
+const themeBtn = document.getElementById('theme-toggle');
+const systemLight = matchMedia('(prefers-color-scheme: light)');
+const THEME_FACES = { auto: '🌗', light: '☀️', dark: '🌙' };
+const THEME_ORDER = ['auto', 'light', 'dark'];
+let themeMode = localStorage.theme || 'auto';
+
+function applyTheme() {
+  const resolved = themeMode === 'auto' ? (systemLight.matches ? 'light' : 'dark') : themeMode;
+  document.documentElement.dataset.theme = resolved;
+  themeBtn.textContent = THEME_FACES[themeMode];
+  themeBtn.title = `Theme: ${themeMode === 'auto' ? 'auto (follows your system)' : themeMode} — click to change`;
+}
+applyTheme();
+systemLight.addEventListener('change', () => { if (themeMode === 'auto') applyTheme(); });
+themeBtn.addEventListener('click', () => {
+  themeMode = THEME_ORDER[(THEME_ORDER.indexOf(themeMode) + 1) % THEME_ORDER.length];
+  if (themeMode === 'auto') localStorage.removeItem('theme');
+  else localStorage.theme = themeMode;
+  applyTheme();
+});
+
 // ---------------------------------------------------------------- live connection
 
+// the indicator only appears when the stream is broken — healthy is silent
 function connect() {
   const es = new EventSource('/api/events');
-  es.onopen = () => { conn.textContent = 'live'; conn.className = 'conn ok'; };
+  es.onopen = () => { conn.hidden = true; };
   es.onmessage = (e) => render(JSON.parse(e.data));
   es.onerror = () => {
     conn.textContent = 'reconnecting…';
     conn.className = 'conn err';
+    conn.hidden = false;
   };
 }
 
