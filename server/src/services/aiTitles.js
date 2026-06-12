@@ -88,11 +88,14 @@ function buildPrompt(session) {
   );
 }
 
-/** First line, unquoted, no trailing period, bounded — or null if unusable. */
+/** First line, no quotes/markdown emphasis/trailing period, bounded — or null if unusable. */
 function sanitize(raw) {
   if (!raw) return null;
   let t = raw.trim().split('\n')[0].trim();
-  t = t.replace(/^["'`]+|["'`]+$/g, '').replace(/[.。]+$/, '').trim();
+  for (let prev = ''; prev !== t; ) {
+    prev = t;
+    t = t.replace(/^["'`*_#\s]+|["'`*_\s]+$/g, '').replace(/[.。]+$/, '').trim();
+  }
   if (!t || t.length < 3) return null;
   return t.slice(0, 80);
 }
