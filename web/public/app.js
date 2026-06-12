@@ -499,18 +499,30 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
 
 // ---------------------------------------------------------------- theme toggle
 
-// a head-inline script applies the saved theme before the stylesheet loads
-// (no flash); this just keeps the button face in sync and handles clicks
+// Three modes: auto (follow the OS appearance, live — handles scheduled
+// day/night switching), light, dark. No stored value = auto; an explicit
+// choice pins and persists. A head-inline script applies the resolved theme
+// before the stylesheet loads (no flash); this keeps the button in sync.
 const themeBtn = document.getElementById('theme-toggle');
-function applyTheme(theme) {
-  document.documentElement.dataset.theme = theme;
-  localStorage.theme = theme;
-  themeBtn.textContent = theme === 'dark' ? '🌙' : '☀️';
-  themeBtn.title = theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme';
+const systemLight = matchMedia('(prefers-color-scheme: light)');
+const THEME_FACES = { auto: '🌗', light: '☀️', dark: '🌙' };
+const THEME_ORDER = ['auto', 'light', 'dark'];
+let themeMode = localStorage.theme || 'auto';
+
+function applyTheme() {
+  const resolved = themeMode === 'auto' ? (systemLight.matches ? 'light' : 'dark') : themeMode;
+  document.documentElement.dataset.theme = resolved;
+  themeBtn.textContent = THEME_FACES[themeMode];
+  themeBtn.title = `Theme: ${themeMode === 'auto' ? 'auto (follows your system)' : themeMode} — click to change`;
 }
-applyTheme(localStorage.theme || 'dark');
-themeBtn.addEventListener('click', () =>
-  applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+applyTheme();
+systemLight.addEventListener('change', () => { if (themeMode === 'auto') applyTheme(); });
+themeBtn.addEventListener('click', () => {
+  themeMode = THEME_ORDER[(THEME_ORDER.indexOf(themeMode) + 1) % THEME_ORDER.length];
+  if (themeMode === 'auto') localStorage.removeItem('theme');
+  else localStorage.theme = themeMode;
+  applyTheme();
+});
 
 // ---------------------------------------------------------------- live connection
 
