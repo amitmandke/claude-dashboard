@@ -73,6 +73,7 @@
         <p class="prompt-text"></p>
       </div>
       <div class="feed"></div>
+      <div class="live-line" hidden></div>
       <div class="pending-question" hidden>
         <span class="pq-icon">❓</span>
         <span class="pq-text"></span>
@@ -90,6 +91,7 @@
           <input type="checkbox" class="press-enter" checked>⏎
         </label>
         <button type="submit" class="send-btn">Send</button>
+        <button type="button" class="esc-btn" title="Send Esc — interrupts the running turn or dismisses a menu">⎋ Esc</button>
         <button type="button" class="focus-btn" title="Switch to this session's pane in iTerm2">Open in iTerm ↗</button>
       </form>
     </section>
@@ -108,7 +110,7 @@
         </select>
         <span class="skill-desc hint" id="ns-skill-desc"></span>
       </label>
-      <label><span id="ns-prompt-label">Initial prompt</span> <span class="hint">(optional)</span>
+      <label><span id="ns-prompt-label">Initial prompt</span> <span class="hint">(optional — Enter launches, Shift+Enter for a new line)</span>
         <textarea id="ns-prompt" rows="3" placeholder="What should this session work on?"></textarea>
       </label>
       <div class="dialog-actions">

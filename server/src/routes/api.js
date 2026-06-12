@@ -150,9 +150,14 @@ async function handle(req, res, url) {
 
   const m = url.pathname.match(/^\/api\/sessions\/(\d+)\/(send|key|focus|end)$/);
   if (m && req.method === 'POST') {
-    console.log(`[${new Date().toISOString()}] ACTION ${m[2]} pid=${m[1]}`);
     const pid = parseInt(m[1], 10);
     const action = m[2];
+    const body = action === 'send' || action === 'key' ? await readBody(req) : {};
+    console.log(
+      `[${new Date().toISOString()}] ACTION ${action} pid=${pid}` +
+      (action === 'key' ? ` key=${body.key}` : '') +
+      (action === 'send' ? ` chars=${(body.text || '').length} enter=${body.pressEnter !== false}` : '')
+    );
     if (!registry.isAlive(pid)) return json(res, 410, { error: 'session process is gone' }), true;
 
     if (action === 'end') {
@@ -168,11 +173,9 @@ async function handle(req, res, url) {
     } else if (action === 'focus') {
       await terminals.focus(pid);
     } else if (action === 'key') {
-      const body = await readBody(req);
       if (!body.key) return json(res, 400, { error: 'key is required' }), true;
       await terminals.sendKey(pid, String(body.key));
     } else {
-      const body = await readBody(req);
       if (!body.text || !body.text.trim()) return json(res, 400, { error: 'text is required' }), true;
       await terminals.sendText(pid, body.text, body.pressEnter !== false);
     }

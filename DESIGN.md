@@ -80,7 +80,7 @@ agent (starts at login, restarts on crash, logs to `~/Library/Logs/claude-dashbo
 │ ║ └───────────────────────────────────┘ ║  └──────────────────────────────────────┘   │
 │ ║ ❓ wants to run Bash — git push origin main                                          │
 │ ║ [✓ Approve][✓✓ Always][✗ Deny][✎ Deny & redirect]                                   │
-│ ║ [yes, go ahead…        ] [⏎][Send][Open in iTerm ↗]                                 │
+│ ║ [yes, go ahead…        ] [⏎][Send][⎋ Esc][Open in iTerm ↗]                          │
 │ ╚══════════════════════════════════════╝  (🟢 busy cards render calm, no animation)   │
 └──────────────────────────────────────────────────────────────────────────────────────┘
    ╔══╗ = card border FLASHING red          🟡 = soft amber pulse        🟢 = steady
@@ -94,10 +94,11 @@ agent (starts at login, restarts on crash, logs to `~/Library/Logs/claude-dashbo
 | Meta row | project · full cwd, pid, model, uptime, `ctx <n> · ↑<n>` live tokens | monospace, subdued |
 | "Started with" | first real user prompt of the session | clamped to 3 lines; click to expand |
 | Activity feed | last 40 actions: tool calls (`⚙ Bash — run pytest`), your prompts, Claude's replies, tool errors (`✗`) | auto-scrolls to newest unless you scrolled up |
+| Live progress line | the spinner line Claude Code renders in the pane while working — `✽ Germinating… (1m 57s · ↓ 6.7k tokens)` — so a `busy` card shows the same motion you'd see in the terminal | polled from the pane (`/screen`) every ~2s while `busy`, matched by glyph + gerund + `(stats)` shape (not by "esc to interrupt", which the shortcut-hint bar also contains); breathing teal; hidden for other statuses |
 | Question banner | one compact line (full text on hover): for `waiting` — the pending tool call with the **literal command** (`wants to run Bash — cd /repo && git log…`) or AskUserQuestion text, in red; for `reply` — Claude's closing question, in amber | hidden for `done`/`busy`; pending tool = most recent tool call with no result in the transcript |
 | Terminal mirror | the bottom ~40 lines of the session's actual pane while `waiting` — the permission dialog exactly as rendered, including the command and Claude Code's safety warning ("this command changes directory before running git…"), which exist only on screen, not in any file | fetched from iTerm2 (`text of session`) once per waiting episode; hidden otherwise |
 | Quick actions | Approve / Always / Deny / Deny-&-redirect | only visible while the card is `waiting` |
-| Composer | text input + ⏎ toggle + Send + Open in iTerm ↗ | see interactions below |
+| Composer | text input + ⏎ toggle + Send + ⎋ Esc + Open in iTerm ↗ | see interactions below; ⎋ Esc sends a bare Esc — interrupts the running turn or dismisses a menu (always available, unlike Deny which only shows while `waiting`); lights up red while the session is `busy` (there's a turn to interrupt), dull gray otherwise |
 | End (✕ in header) | interrupt (Esc) → `/exit` → wait for process exit → close the iTerm pane | confirmation asked; refuses (409) if the session won't exit |
 
 Every action button follows the same lifecycle: pressed-down scale on click, dimmed +
@@ -127,12 +128,17 @@ states using two transcript signals (heuristics — see trade-offs):
 | `waiting` (+ `waitingFor`) | hard-blocked on you — e.g. permission prompt | **red flashing border + background strobe**, badge shows the reason, red banner shows the exact pending tool call/question |
 | process gone | session exited | card disappears |
 
-Cards auto-sort: `waiting`, then `reply`, then `done`, then `busy`. The browser tab title
-also flashes (`🔴 1 waiting — Claude Dashboard`) so you see it from any other tab.
+Cards auto-sort: `waiting`, then `reply`, then `done`, then `busy` — oldest session first
+within a status. The grid re-orders live as statuses change, except while the cursor is
+inside a card (moving a DOM node would drop focus mid-typing); it catches up on the next
+tick after focus leaves. The browser tab title also flashes
+(`🔴 1 waiting — Claude Dashboard`) so you see it from any other tab.
 
 ### Summary bar (top of page)
 
-Clickable stat tiles, doubling as filters for the grid (click again to clear):
+Clickable stat tiles, doubling as filters for the grid (click again to clear). The
+"Need attention" tile flashes red (same animation as `waiting` cards) whenever its
+count is above zero:
 
 ```
 ┌──────────┬─────────┬────────────────┬──────────────────────┬───────────────┐
@@ -158,13 +164,14 @@ Clickable stat tiles, doubling as filters for the grid (click again to clear):
 4. **Reply without switching windows** — type in the composer, hit Send → the text is typed into that session's iTerm2 pane and submitted.
 5. **Answer menus/permission prompts** — untick the ⏎ toggle to send raw characters without Enter (e.g. `1` to choose an option).
 6. **Jump to the terminal** — "Open in iTerm ↗" raises that exact iTerm2 tab/pane for full manual control.
-7. **One-click permission handling** — flashing cards show Approve / Always / Deny / Deny-&-redirect buttons that inject the matching keystrokes.
-8. **Start a new session from the UI** — ＋ New Session opens a dialog with a recent-projects picker (from `~/.claude/history.jsonl`), an optional **skill picker** (user + project skills/commands, like typing `/` in Claude; the prompt field becomes the skill's arguments), and an optional initial prompt; the server opens a **new iTerm2 window**, `cd`s there, runs `claude "<prompt>"` (e.g. `claude "/review-pr 1234"`), and the new card appears on the dashboard within seconds (the session registers itself).
-9. **Triage by status** — summary tiles filter the grid to just waiting / reply / done / busy sessions.
-10. **End a session** — ✕ on the card (with confirmation) interrupts, sends `/exit`, and closes the pane once the process exits.
-11. **Rename a session** — ✎ next to the title; empty input reverts to the auto title.
-12. **Watch live usage** — a strip under the summary tiles totals context-in-use and recent output tokens across active sessions (recomputed from transcripts every tick, no persisted/stale stats); each card shows its own `ctx · ↑output`.
-13. **Observe-only degradation** — sessions in unscriptable terminals keep full observation; their composer/buttons are disabled with an explanatory placeholder.
+7. **Interrupt a running turn** — ⎋ Esc in the composer row sends a bare Esc to the pane, exactly like pressing Esc in the terminal (stops the current turn; the session stays alive and waits for new instructions).
+8. **One-click permission handling** — flashing cards show Approve / Always / Deny / Deny-&-redirect buttons that inject the matching keystrokes.
+9. **Start a new session from the UI** — ＋ New Session opens a dialog with a recent-projects picker (from `~/.claude/history.jsonl`), an optional **skill picker** (user + project skills/commands, like typing `/` in Claude; the prompt field becomes the skill's arguments), and an optional initial prompt (Enter launches, Shift+Enter inserts a newline, matching Claude Code's composer); the server opens a **new iTerm2 window**, `cd`s there, runs `claude "<prompt>"` (e.g. `claude "/review-pr 1234"`), and the new card appears on the dashboard within seconds (the session registers itself).
+10. **Triage by status** — summary tiles filter the grid to just waiting / reply / done / busy sessions.
+11. **End a session** — ✕ on the card (with confirmation) interrupts, sends `/exit`, and closes the pane once the process exits.
+12. **Rename a session** — ✎ next to the title; empty input reverts to the auto title.
+13. **Watch live usage** — a strip under the summary tiles totals context-in-use and recent output tokens across active sessions (recomputed from transcripts every tick, no persisted/stale stats); each card shows its own `ctx · ↑output`.
+14. **Observe-only degradation** — sessions in unscriptable terminals keep full observation; their composer/buttons are disabled with an explanatory placeholder.
 
 ## 5. Backend components
 

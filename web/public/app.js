@@ -137,6 +137,11 @@ function buildCard(s) {
   focusBtn.addEventListener('click', () =>
     withFeedback(focusBtn, 'Open failed', () => post(`/api/sessions/${s.pid}/focus`)));
 
+  const escBtn = card.querySelector('.esc-btn');
+  escBtn.addEventListener('click', () =>
+    withFeedback(escBtn, 'Esc failed', () =>
+      post(`/api/sessions/${s.pid}/key`, { key: 'escape' }), '✓ Sent'));
+
   card.querySelector('.prompt-text').addEventListener('click', (e) => {
     e.target.classList.toggle('expanded');
   });
@@ -182,6 +187,18 @@ function buildCard(s) {
   return card;
 }
 
+// Bottom-most line of the pane that looks like Claude Code's progress indicator,
+// e.g. "✽ Germinating… (1m 57s · ↓ 6.7k tokens)": spinner glyph + gerund + "(stats)".
+// Don't match on "esc to interrupt" — the shortcut-hint bar below the input box has it too.
+function spinnerLine(screen) {
+  const lines = screen.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i].trim();
+    if (/^[^\x00-\x7F]\s*\S+…\s*\(/.test(l)) return l;
+  }
+  return '';
+}
+
 function updateCard(card, s, now) {
   const st = s.derivedStatus || s.status;
   card.dataset.status = st;
@@ -224,6 +241,28 @@ function updateCard(card, s, now) {
   pqText.textContent = question;
   pqText.title = question; // full text on hover; the banner itself is one clamped line
 
+  // while busy, surface the live progress line Claude Code renders in the pane
+  // ("✻ Thinking… (12s · ↑ 1.2k tokens · esc to interrupt)") — it exists only on screen
+  const live = card.querySelector('.live-line');
+  if (st === 'busy' && s.terminal) {
+    if (Date.now() - Number(card.dataset.liveAt || 0) > 2000) {
+      card.dataset.liveAt = Date.now();
+      fetch(`/api/sessions/${s.pid}/screen`)
+        .then((r) => r.json())
+        .then(({ screen }) => {
+          if (card.dataset.status !== 'busy') return;
+          const line = spinnerLine(screen || '');
+          if (line) live.textContent = line;
+          live.hidden = !line && !live.textContent;
+        })
+        .catch(() => {});
+    }
+  } else {
+    live.hidden = true;
+    live.textContent = '';
+    delete card.dataset.liveAt;
+  }
+
   // mirror the terminal's permission dialog (command + safety warning) while waiting
   const mirror = card.querySelector('.screen-mirror');
   if (st === 'waiting') {
@@ -253,7 +292,7 @@ function updateCard(card, s, now) {
   // observe-only when the hosting terminal has no interaction backend
   const interactive = !!s.terminal;
   card.classList.toggle('readonly', !interactive);
-  for (const el of card.querySelectorAll('.send-input, .send-btn, .focus-btn, .qa-btn, .end-btn')) {
+  for (const el of card.querySelectorAll('.send-input, .send-btn, .esc-btn, .focus-btn, .qa-btn, .end-btn')) {
     if (!el.classList.contains('btn-done')) el.disabled = !interactive;
   }
   if (!interactive) {
@@ -274,6 +313,7 @@ function updateStats(sessions) {
   document.getElementById('stat-reply').textContent = counts.reply;
   document.getElementById('stat-done').textContent = counts.done;
   document.getElementById('stat-waiting').textContent = counts.waiting;
+  document.querySelector('.stat-waiting').classList.toggle('flashing', counts.waiting > 0);
   return counts;
 }
 
@@ -305,6 +345,15 @@ function render(data) {
       grid.appendChild(card);
     }
     updateCard(card, s, now);
+  }
+
+  // follow the server's attention-first order (waiting → reply → done → busy,
+  // oldest first within a status). appendChild moves existing nodes, which drops
+  // focus — so don't shuffle while the user is interacting inside a card.
+  const desired = sessions.map((s) => 'card-' + s.pid);
+  const current = [...grid.children].map((c) => c.id);
+  if (desired.some((id, i) => id !== current[i]) && !grid.contains(document.activeElement)) {
+    for (const id of desired) grid.appendChild(document.getElementById(id));
   }
 
   const visible = [...grid.children].filter((c) => !c.hidden).length;
@@ -367,6 +416,14 @@ function updateSkillUi() {
 
 nsSkill.addEventListener('change', updateSkillUi);
 nsCwd.addEventListener('change', loadSkills); // project skills depend on the chosen dir
+
+// Enter submits from the prompt textarea (Shift+Enter for a newline), matching Claude Code
+nsPrompt.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    e.target.form.requestSubmit();
+  }
+});
 
 document.getElementById('new-session-btn').addEventListener('click', async () => {
   try {
