@@ -17,13 +17,16 @@ HTML/CSS/JS frontend (`web/public/`) over SSE. Interaction (typing into sessions
 Esc/digit keys, terminal mirror, focus, end, launch) is routed through per-session
 terminal backends in `services/terminals/` — tmux, iTerm2, or Terminal.app, detected
 from the claude process's env (`ps -E`: TMUX / TERM_PROGRAM); unsupported terminals
-render observe-only. Session titles come from the terminal title Claude Code sets,
-with user overrides persisted in `~/.claude-dashboard/titles.json`.
+render observe-only. Session titles are AI-derived: `services/aiTitles.js` shells out to
+headless `claude -p --model haiku` (subscription-billed, no API key) to summarize each
+session's primary task from its prompt + activity feed, regenerating only on new user
+turns (cache: `~/.claude-dashboard/ai-titles.json`); precedence is ✎ custom title
+(`titles.json`) > AI title > terminal title Claude Code sets > first prompt > folder.
 
 ## Layout
 
 - `server/src/` — `index.js` (entry), `config.js`, `routes/` (api, static),
-  `services/` (sessionRegistry, transcript, customTitles, projects, skills,
+  `services/` (sessionRegistry, transcript, customTitles, aiTitles, projects, skills,
   `terminals/` = dispatcher + procEnv + iterm + appleTerminal + tmux), `utils/fsio.js`
 - `web/public/` — `index.html`, `app.js`, `style.css` (no framework, no build step)
 - `scripts/start.sh` — background-start + open browser; `install-launchd.sh` /
@@ -71,6 +74,11 @@ No tests yet. Verify changes by running the server with real live sessions (star
   window — that reads as tabs appearing out of nowhere) and holds a direct reference to
   the new session: right after creation, "current session of current window" can point
   elsewhere.
+- **Spawning while iTerm2 is not running must launch-and-wait first**: `iterm.js
+  ensureAppRunning()` starts the app via `open -b` and polls a trivial AppleScript
+  query until it round-trips; sending `create window` during app startup throws opaque
+  AppleEvent errors. The spawn script then polls for the new window's session/tty
+  instead of trusting a fixed delay. Don't collapse this back into one tell block.
 - **`[hidden] { display:none !important }` is load-bearing** in `style.css`: several
   elements use `display:flex`, which otherwise overrides the HTML `hidden` attribute and
   makes "hidden" UI (quick actions, question banner) show permanently.
@@ -91,5 +99,20 @@ No tests yet. Verify changes by running the server with real live sessions (star
   Side-effect matching must stay invocation-shaped (`git push`, `gh pr comment`), never
   bare word matching — "show PR commits" is read-only. Keep the UI honest by always
   showing the closing text on `reply` cards.
+- **Terminal titles summarize the latest exchange, not the session's main task** —
+  Claude Code retitles the window after the most recent prompt, so a side question
+  ("is it stuck?") renames a PR-review session to "Investigate stuck issue". That is
+  why `aiTitles.js` exists: it asks Claude (headless `claude -p`) for the *primary*
+  task across the whole feed. Don't replace it with non-LLM heuristics over
+  transcripts — those were rejected as guesswork.
+- **AI-title workers must stay invisible**: headless runs execute with
+  `cwd = ~/.claude-dashboard/headless` and `sessionRegistry.js` drops registry entries
+  with that cwd — change both together or the dashboard shows (and retitles) its own
+  workers, recursively. Generation is strictly one-at-a-time with a per-session turn
+  key + 2-min failure back-off; don't make it per-tick or parallel, each call spawns a
+  full Claude Code process (~15s).
+- **Transcript `usage` repeats per line**: one assistant API response becomes several
+  jsonl lines (one per content block), each carrying the same `message.usage`. Sum
+  token counts per `message.id`, never per line — a per-line sum overcounts 3-5×.
 - Interaction features are iTerm2-only; observation works with any terminal.
 - First osascript call triggers a one-time macOS "control iTerm2" permission dialog.

@@ -40,6 +40,8 @@ function collectSessions() {
       continue;
     }
     if (!reg.pid || !reg.sessionId || !isAlive(reg.pid)) continue;
+    // headless `claude -p` runs spawned by our own AI-title service — not user sessions
+    if (reg.cwd === config.HEADLESS_CWD) continue;
 
     const transcriptPath = path.join(
       config.PROJECTS_DIR,

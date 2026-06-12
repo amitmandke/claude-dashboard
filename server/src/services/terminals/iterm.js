@@ -182,10 +182,37 @@ async function focus(pid) {
   await expectOk(runOsa(findSessionScript(body), [itermId]));
 }
 
+/** True when the iTerm2 app process is running. */
+function isAppRunning() {
+  return new Promise((r) => execFile('pgrep', ['-xq', 'iTerm2'], (err) => r(!err)));
+}
+
+/** Launch iTerm2 if needed and wait until it answers AppleScript. Sending
+ *  `create window` while the app is still starting up races its launch and
+ *  fails with opaque AppleEvent errors, so spawn must not proceed until a
+ *  trivial query round-trips. */
+async function ensureAppRunning() {
+  if (await isAppRunning()) return;
+  await new Promise((resolve, reject) =>
+    execFile('open', ['-b', 'com.googlecode.iterm2'], (err) => (err ? reject(err) : resolve()))
+  );
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    try {
+      await runOsa('tell application "iTerm2" to count windows');
+      return;
+    } catch (e) {
+      if (Date.now() > deadline) throw new Error(`iTerm2 did not finish launching: ${e.message}`);
+      await sleep(250);
+    }
+  }
+}
+
 /** Open a new iTerm2 window, cd into `cwd`, and launch claude [prompt].
  *  Always a fresh window — grabbing a tab inside the user's current window is
  *  disruptive and looks like tabs appearing out of nowhere. */
 async function spawnSession(cwd, prompt) {
+  await ensureAppRunning();
   const script = `
 on run argv
   set dir to item 1 of argv
@@ -195,7 +222,17 @@ on run argv
   tell application "iTerm2"
     activate
     set newWindow to (create window with default profile)
-    set target to current session of newWindow
+    set target to missing value
+    repeat 40 times
+      try
+        set target to current session of newWindow
+        if target is not missing value then
+          if tty of target is not missing value then exit repeat
+        end if
+      end try
+      delay 0.25
+    end repeat
+    if target is missing value then error "the new iTerm2 window never produced a session"
     delay 0.5
     tell target to write text cmd
     return tty of target

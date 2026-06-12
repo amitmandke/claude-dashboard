@@ -31,7 +31,7 @@ function isRealUserPrompt(entry) {
 function userPromptText(entry) {
   const c = entry.message.content;
   if (typeof c === 'string') return c;
-  const t = c.find((b) => b.type === 'text');
+  const t = Array.isArray(c) ? c.find((b) => b.type === 'text') : null;
   return t ? t.text : '';
 }
 
@@ -106,7 +106,10 @@ function extractEvents(entries) {
   let lastAssistantHead = null; // untruncated start — where a document header would be
   let lastAssistantLen = 0;
   let contextTokens = 0; // context size at the most recent assistant turn
-  let outputTokens = 0; // output generated within the parsed tail window
+  // One API response is written as several jsonl lines (one per content block), each
+  // repeating the same message.usage — sum per API message id, never per line, or
+  // output counts inflate 3-5x. Last line wins (streaming updates the count).
+  const outputByMsg = new Map();
   let lastTurnSideEffect = false; // did the current turn land its work anywhere?
   const pendingToolNames = new Map(); // tool_use id -> tool name, to label errors
   const unresolved = new Map(); // tool_use id -> {tool, detail}, deleted when a result arrives
@@ -121,7 +124,7 @@ function extractEvents(entries) {
       if (u) {
         contextTokens =
           (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
-        outputTokens += u.output_tokens || 0;
+        outputByMsg.set(entry.message.id || entry.uuid, u.output_tokens || 0);
       }
       const content = entry.message.content;
       if (!Array.isArray(content)) continue;
@@ -156,6 +159,14 @@ function extractEvents(entries) {
         lastTurnSideEffect = false; // a new turn starts
         continue;
       }
+      // skill/slash-command invocations arrive as XML-ish markup, not plain prompts —
+      // render them as "/skill args" so the feed shows what the session was asked to do
+      const cmd = !entry.isMeta && !entry.isSidechain && commandPromptText(userPromptText(entry));
+      if (cmd) {
+        events.push({ kind: 'user', text: truncate(cmd, 200), at: ts });
+        lastTurnSideEffect = false; // a new turn starts
+        continue;
+      }
       const content = entry.message.content;
       if (!Array.isArray(content)) continue;
       for (const block of content) {
@@ -179,6 +190,8 @@ function extractEvents(entries) {
   }
 
   const pendingTool = [...unresolved.values()].pop() || null;
+  let outputTokens = 0;
+  for (const n of outputByMsg.values()) outputTokens += n;
   return {
     events: events.slice(-config.MAX_EVENTS),
     model,

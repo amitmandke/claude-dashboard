@@ -8,9 +8,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
-const DATA_DIR = path.join(os.homedir(), '.claude-dashboard');
+const config = require('../config');
+
+const DATA_DIR = config.DATA_DIR;
 const FILE = path.join(DATA_DIR, 'titles.json');
 const MAX_ENTRIES = 200;
 

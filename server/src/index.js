@@ -20,6 +20,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'not found' }));
   } catch (e) {
+    console.error(`[${new Date().toISOString()}] ERROR ${req.method} ${url.pathname}: ${e.message}`);
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
     }
