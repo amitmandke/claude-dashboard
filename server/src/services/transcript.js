@@ -242,4 +242,27 @@ function parseTail(transcriptPath) {
   return extractEvents(parseLines(readTail(transcriptPath, config.TAIL_BYTES)));
 }
 
-module.exports = { encodeProjectDir, firstPrompt, parseTail, needsReply, looksLikeDeliverable };
+/**
+ * Full (untruncated) text of the assistant message at the given transcript
+ * timestamp. Feed events carry `at`, so this resolves a click on a feed entry
+ * back to the complete text — feed entries themselves stay small (200 chars)
+ * to keep the SSE snapshot light. Bounded by the tail read window.
+ */
+function assistantTextAt(transcriptPath, at) {
+  const parts = [];
+  for (const entry of parseLines(readTail(transcriptPath, config.TAIL_BYTES))) {
+    if (entry.isSidechain || entry.type !== 'assistant' || entry.timestamp !== at) continue;
+    const content = entry.message && entry.message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block.type === 'text' && block.text.trim()) parts.push(block.text);
+    }
+  }
+  if (!parts.length) return null;
+  // not truncate() — that flattens whitespace for one-line feed display,
+  // but this text is rendered as markdown, where newlines are structure
+  const t = parts.join('\n\n');
+  return t.length > config.FULL_TEXT_BYTES ? t.slice(0, config.FULL_TEXT_BYTES) + '\n\n…' : t;
+}
+
+module.exports = { encodeProjectDir, firstPrompt, parseTail, assistantTextAt, needsReply, looksLikeDeliverable };
