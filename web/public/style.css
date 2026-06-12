@@ -575,8 +575,8 @@ header { gap: 16px; }
 }
 .ghost-btn:hover { color: var(--text); }
 #new-session-btn { margin-left: auto; }
-#new-session-btn + .theme-toggle { margin-left: 0; }
-.theme-toggle { padding: 6px 10px; font-size: 14px; line-height: 1; align-self: center; }
+/* sits right after the page title, before the right-aligned controls */
+.theme-toggle { padding: 5px 9px; font-size: 14px; line-height: 1; align-self: center; }
 
 dialog {
   background: var(--card);
