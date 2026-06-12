@@ -13,7 +13,8 @@
     <h1>Claude Dashboard</h1>
     <button id="theme-toggle" class="ghost-btn theme-toggle" title="Switch theme">🌙</button>
     <button id="new-session-btn" class="primary-btn">＋ New Session</button>
-    <div id="conn" class="conn">connecting…</div>
+    <!-- visible only while the SSE stream is down — silence means healthy -->
+    <div id="conn" class="conn" hidden></div>
   </header>
 
   <!-- Summary bar: clickable tiles that filter the grid below -->

@@ -514,13 +514,15 @@ themeBtn.addEventListener('click', () =>
 
 // ---------------------------------------------------------------- live connection
 
+// the indicator only appears when the stream is broken — healthy is silent
 function connect() {
   const es = new EventSource('/api/events');
-  es.onopen = () => { conn.textContent = 'live'; conn.className = 'conn ok'; };
+  es.onopen = () => { conn.hidden = true; };
   es.onmessage = (e) => render(JSON.parse(e.data));
   es.onerror = () => {
     conn.textContent = 'reconnecting…';
     conn.className = 'conn err';
+    conn.hidden = false;
   };
 }
 

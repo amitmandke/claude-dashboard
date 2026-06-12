@@ -63,7 +63,7 @@ the fact.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
-│ Claude Dashboard                                          [＋ New Session]        live │
+│ Claude Dashboard  [🌙]                                              [＋ New Session]  │
 ├──────────────────────────────────────────────────────────────────────────────────────┤
 │ ┌────────────────┬─────────┬────────────────┬──────────────────────┬───────────────┐ │
 │ │ 4              │ 1       │ 1              │ 1                    │ 1             │ │
@@ -163,7 +163,7 @@ count is above zero:
 
 ## 4. User interactions
 
-1. **Glance** — open `http://localhost:7777`; every live session appears as a card within ~1.5s, updating live over SSE (no refresh ever needed).
+1. **Glance** — open `http://localhost:7777`; every live session appears as a card within ~1.5s, updating live over SSE (no refresh ever needed). Connection health is silent when good — a red "reconnecting…" appears in the header only while the stream is down.
 2. **Spot trouble** — a session that needs you flashes red (permission prompt) or pulses amber (turn finished, waiting for your next prompt). Tab title flashes too.
 3. **Read the story** — each card shows where the session runs (cwd), what prompt started it, and a scrolling feed of every action: tools used, files touched, commands run, errors hit, what Claude last said.
    **Read a full reply** — click any Claude entry in the feed (or the amber reply banner) to open the complete message, rendered as markdown in a scrollable popup (close: ✕, Esc, or click outside).
