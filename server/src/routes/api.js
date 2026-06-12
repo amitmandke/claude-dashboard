@@ -124,7 +124,9 @@ async function handle(req, res, url) {
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
       return json(res, 400, { error: `not a directory: ${cwd}` }), true;
     }
-    await terminals.spawnSession(cwd, (body.prompt || '').trim());
+    const prompt = (body.prompt || '').trim();
+    console.log(`[${new Date().toISOString()}] ACTION spawn cwd=${cwd} prompt=${prompt.length} chars`);
+    await terminals.spawnSession(cwd, prompt);
     json(res, 200, { ok: true });
     return true;
   }

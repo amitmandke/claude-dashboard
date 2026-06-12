@@ -35,7 +35,9 @@ says which terminal hosts it — `TMUX` → tmux, `TERM_PROGRAM=iTerm.app` → i
 card. All backends implement the same six operations (sendText, sendKey, focus,
 closePane, readScreen, sessionTitle) plus spawnSession. New-session launches pick
 iTerm2 → Terminal.app → tmux, first available (`CLAUDE_DASH_SPAWN=iterm|terminal|tmux`
-overrides).
+overrides). When nothing is running, the iTerm2 backend launches the app itself
+(`open -b com.googlecode.iterm2`) and polls until it answers AppleScript before
+creating the window — creating a window mid-launch fails with opaque AppleEvent errors.
 
 | Backend | Mechanism | Caveats |
 |---|---|---|
@@ -53,6 +55,8 @@ overrides).
 A single `node server/src/index.js` runs everything; the web app is static files served
 by the same process. `scripts/install-launchd.sh` installs it as a macOS launchd user
 agent (starts at login, restarts on crash, logs to `~/Library/Logs/claude-dashboard.log`).
+The log records every interaction (`ACTION send|key|focus|end|spawn …`) and every failed
+request (`ERROR <method> <path>: <message>`), so misbehavior is diagnosable after the fact.
 
 ## 3. UI design
 

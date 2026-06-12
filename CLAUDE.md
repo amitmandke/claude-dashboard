@@ -71,6 +71,11 @@ No tests yet. Verify changes by running the server with real live sessions (star
   window — that reads as tabs appearing out of nowhere) and holds a direct reference to
   the new session: right after creation, "current session of current window" can point
   elsewhere.
+- **Spawning while iTerm2 is not running must launch-and-wait first**: `iterm.js
+  ensureAppRunning()` starts the app via `open -b` and polls a trivial AppleScript
+  query until it round-trips; sending `create window` during app startup throws opaque
+  AppleEvent errors. The spawn script then polls for the new window's session/tty
+  instead of trusting a fixed delay. Don't collapse this back into one tell block.
 - **`[hidden] { display:none !important }` is load-bearing** in `style.css`: several
   elements use `display:flex`, which otherwise overrides the HTML `hidden` attribute and
   makes "hidden" UI (quick actions, question banner) show permanently.
