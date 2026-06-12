@@ -96,7 +96,7 @@ function renderMarkdown(src) {
     const heading = line.match(/^(#{1,6})\s+(.*)/);
     if (heading) {
       flushAll();
-      const level = Math.min(heading[1].length + 2, 6); // h1 → h3 etc.: popup-scale headings
+      const level = heading[1].length;
       out.push(`<h${level}>` + inline(heading[2]) + `</h${level}>`);
       continue;
     }
