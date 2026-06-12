@@ -92,6 +92,7 @@ function collectSessions() {
       contextTokens: parsed.contextTokens,
       recentOutputTokens: parsed.outputTokens,
       events: parsed.events,
+      transcriptPath,
       transcriptMtime,
     });
   }
