@@ -104,6 +104,7 @@ the fact.
 | Terminal mirror | the bottom ~40 lines of the session's actual pane while `waiting` — the permission dialog exactly as rendered, including the command and Claude Code's safety warning ("this command changes directory before running git…"), which exist only on screen, not in any file | fetched from iTerm2 (`text of session`) once per waiting episode; hidden otherwise |
 | Quick actions | Approve / Always / Deny / Deny-&-redirect | only visible while the card is `waiting` |
 | Composer | text input + ⏎ toggle + Send + ⎋ Esc + Open in iTerm ↗ | see interactions below; ⎋ Esc sends a bare Esc — interrupts the running turn or dismisses a menu (always available, unlike Deny which only shows while `waiting`); lights up red while the session is `busy` (there's a turn to interrupt), dull gray otherwise |
+| Expand (⛶ in header) | lift the card into a large centered overlay (≈960px × 88vh, drag the bottom-right corner to resize up to 96vw × 92vh) over a dimmed backdrop | same DOM node, so the live feed/composer/quick-actions keep working while expanded; collapse via ⛶ / Esc / backdrop click drops it back into its exact grid spot at the default size (the drag-resize inline width/height are cleared on collapse); one card expanded at a time |
 | End (✕ in header) | interrupt (Esc) → `/exit` → wait for process exit → close the iTerm pane | ending kills the session's context, so confirmation is status-aware: `done` closes silently (nothing to lose); `busy`/`waiting`/`reply` confirm with a message naming what would be lost (in-progress turn, pending approval, unanswered question); refuses (409) if the session won't exit |
 
 Every action button follows the same lifecycle: pressed-down scale on click, dimmed +
@@ -179,6 +180,7 @@ count is above zero:
 13. **Watch live usage** — a strip under the summary tiles totals context-in-use and recent output tokens across active sessions (recomputed from transcripts every tick, no persisted/stale stats); each card shows its own `ctx · ↑output`.
 14. **Observe-only degradation** — sessions in unscriptable terminals keep full observation; their composer/buttons are disabled with an explanatory placeholder.
 15. **Switch theme** — the header button cycles 🌗 auto (follows the system appearance, live) → ☀️ light → 🌙 dark; auto is the default, an explicit choice persists across visits.
+16. **Expand a card** — ⛶ in the card header blows it up to a large centered, resizable overlay for a roomier feed/mirror; ⛶ again, Esc, or a backdrop click returns it to its grid spot.
 
 ## 5. Backend components
 

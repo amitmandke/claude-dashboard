@@ -85,6 +85,7 @@ click OK; Terminal.app raw keys additionally need Accessibility permission.
 | Jump to the terminal | **Open in iTerm ↗** — raises that exact iTerm2 pane |
 | Start a new session | **＋ New Session** — pick a recent project dir, optionally a **skill** (like typing `/my-skill` in Claude, with your prompt as its arguments), and an initial prompt; launches `claude` in a new terminal window and the card appears automatically |
 | End a session | **✕** on the card — interrupts, sends `/exit`, closes the pane. Turn-complete cards close without asking; working/blocked cards confirm first (ending loses the session's context) |
+| Expand a card | **⛶** in the card header — opens a large, resizable overlay (drag the corner) for a roomier feed/terminal mirror; **⛶** again, **Esc**, or a backdrop click returns it to its place |
 | Rename a session | **✎** next to the title — empty input reverts to the auto title |
 | Switch theme | **🌗/☀️/🌙** next to the title — auto (follows your system appearance, including scheduled day/night switching), light, or dark; an explicit choice is remembered across visits |
 

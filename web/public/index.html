@@ -44,6 +44,9 @@
 
   <div id="usage-strip" class="usage-strip"></div>
 
+  <!-- dims the grid behind an expanded card; click to collapse -->
+  <div id="card-backdrop" class="card-backdrop" hidden></div>
+
   <main id="grid"></main>
 
   <div id="empty" class="empty" hidden>
@@ -62,6 +65,7 @@
         </div>
         <div class="head-right">
           <span class="status-label"></span>
+          <button class="expand-btn" title="Expand this card (Esc to close)">⛶</button>
           <button class="end-btn" title="End this session: interrupt, /exit, close the pane">✕</button>
         </div>
       </div>

@@ -116,6 +116,34 @@ function showReply(title, fallbackText, pid, at) {
     .catch(() => {}); // fallback (truncated) text is already showing
 }
 
+// ---- expand a single card to a large centered overlay and back. The card
+// stays the same DOM node (keeps its live updates, feed scroll, and composer),
+// so collapsing drops it right back into its grid spot. One at a time.
+const cardBackdrop = document.getElementById('card-backdrop');
+function collapseExpanded() {
+  const open = grid.querySelector('.card.expanded');
+  if (open) {
+    open.classList.remove('expanded');
+    // drop the inline width/height the corner-drag resize left behind, or the
+    // card keeps its dragged size back in the grid
+    open.style.width = '';
+    open.style.height = '';
+  }
+  cardBackdrop.hidden = true;
+}
+function toggleExpand(card) {
+  const willExpand = !card.classList.contains('expanded');
+  collapseExpanded(); // never two at once
+  if (willExpand) {
+    card.classList.add('expanded');
+    cardBackdrop.hidden = false;
+  }
+}
+cardBackdrop.addEventListener('click', collapseExpanded);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && grid.querySelector('.card.expanded')) collapseExpanded();
+});
+
 const EVT_TAGS = { user: 'you', assistant: 'claude' };
 
 function renderEvents(feedEl, events, s) {
@@ -226,6 +254,8 @@ function buildCard(s) {
     waiting: (p) => `${p} is waiting on your approval — ending now terminates the session and its context. End it anyway?`,
     reply: (p) => `${p} is awaiting your input — ending now terminates the session and its context. End it anyway?`,
   };
+  card.querySelector('.expand-btn').addEventListener('click', () => toggleExpand(card));
+
   const endBtn = card.querySelector('.end-btn');
   endBtn.addEventListener('click', () => {
     const st = card.dataset.status; // live status, not the build-time snapshot
@@ -392,6 +422,8 @@ function render(data) {
   for (const card of [...grid.children]) {
     if (!livePids.has(card.id)) card.remove();
   }
+  // an expanded card whose session just ended is gone — drop the backdrop with it
+  if (!grid.querySelector('.card.expanded')) cardBackdrop.hidden = true;
 
   for (const s of sessions) {
     let card = document.getElementById('card-' + s.pid);
