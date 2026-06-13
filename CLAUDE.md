@@ -46,10 +46,18 @@ Unit tests use Node's built-in runner (no deps): `npm test` (or `node --test`) r
 everything in `test/`. They cover the pure-logic modules — transcript parsing/heuristics,
 fsio, title cleaning/sanitizing, the markdown renderer. The DOM frontend (`app.js`) and
 the AppleScript/tmux backends are integration-only; verify those by running the server
-with real live sessions and watching the dashboard. CI runs `node --test` on every PR
-(`.github/workflows/test.yml`). To keep a function testable, export it (several are
-exported solely for tests, noted as such); `CLAUDE_DASH_DATA_DIR` overrides the data dir
-so persistence tests never touch the real `~/.claude-dashboard`.
+with real live sessions and watching the dashboard. CI (`.github/workflows/test.yml`)
+runs the tests **with coverage thresholds** on every PR — `node --test
+--experimental-test-coverage` with `--test-coverage-lines=80 --test-coverage-branches=68
+--test-coverage-functions=78`, scoped (via `--test-coverage-exclude`) to the pure-logic
+modules; the integration-only files (routes, terminals, sessionRegistry, projects,
+skills) are excluded since they can't be unit-tested without a browser/real apps. So
+adding logic that drops coverage below the bar fails CI — keep the tests up. A second job
+publishes the coverage % to a `badges` branch (Shields endpoint → README badge). Both the
+`test` check and green tests are required to merge to `main` (branch protection). To keep
+a function testable, export it (several are exported solely for tests, noted as such);
+`CLAUDE_DASH_DATA_DIR` overrides the data dir so persistence tests never touch the real
+`~/.claude-dashboard`.
 
 ## Hard rules & conventions
 

@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: write # the badge job force-pushes a one-file 'badges' branch
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -12,6 +15,67 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      # zero dependencies — nothing to install; Node's built-in test runner only
-      - run: node --test
+          node-version: 24 # coverage threshold/exclude flags need Node 22.5+
+      # zero dependencies — Node's built-in test runner + coverage only.
+      # Coverage is gated on the pure-logic modules; integration-only files
+      # (HTTP routing, AppleScript/tmux backends, registry/projects/skills,
+      # the DOM frontend) are excluded since they need a browser/real apps.
+      - name: Run tests with coverage gate
+        run: |
+          set -o pipefail
+          node --test --experimental-test-coverage --test-reporter=spec \
+            --test-coverage-exclude='test/**' \
+            --test-coverage-exclude='server/src/routes/**' \
+            --test-coverage-exclude='server/src/services/sessionRegistry.js' \
+            --test-coverage-exclude='server/src/services/projects.js' \
+            --test-coverage-exclude='server/src/services/skills.js' \
+            --test-coverage-exclude='server/src/services/terminals/**' \
+            --test-coverage-lines=80 \
+            --test-coverage-branches=68 \
+            --test-coverage-functions=78 \
+            | tee coverage.txt
+      - name: Coverage summary
+        if: always()
+        run: |
+          {
+            echo '### Coverage'
+            echo '```'
+            sed -n '/start of coverage/,/end of coverage/p' coverage.txt || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  coverage-badge:
+    needs: test
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Compute coverage and write the badge endpoint JSON
+        run: |
+          set -o pipefail
+          node --test --experimental-test-coverage --test-reporter=spec \
+            --test-coverage-exclude='test/**' \
+            --test-coverage-exclude='server/src/routes/**' \
+            --test-coverage-exclude='server/src/services/sessionRegistry.js' \
+            --test-coverage-exclude='server/src/services/projects.js' \
+            --test-coverage-exclude='server/src/services/skills.js' \
+            --test-coverage-exclude='server/src/services/terminals/**' \
+            | tee coverage.txt
+          pct=$(grep 'all files' coverage.txt | awk -F'|' '{gsub(/ /,"",$2); print int($2)}')
+          if [ "$pct" -ge 80 ]; then color=brightgreen
+          elif [ "$pct" -ge 60 ]; then color=yellow
+          else color=red; fi
+          mkdir -p out
+          printf '{"schemaVersion":1,"label":"coverage","message":"%s%%","color":"%s"}\n' "$pct" "$color" > out/coverage.json
+          cat out/coverage.json
+      - name: Publish to the badges branch
+        run: |
+          cd out
+          git init -q
+          git checkout -q -b badges
+          git add coverage.json
+          git -c user.email=actions@github.com -c user.name=github-actions commit -q -m "coverage badge"
+          git push -fq "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" badges
