@@ -265,4 +265,8 @@ function assistantTextAt(transcriptPath, at) {
   return t.length > config.FULL_TEXT_BYTES ? t.slice(0, config.FULL_TEXT_BYTES) + '\n\n…' : t;
 }
 
-module.exports = { encodeProjectDir, firstPrompt, parseTail, assistantTextAt, needsReply, looksLikeDeliverable };
+module.exports = {
+  encodeProjectDir, firstPrompt, parseTail, assistantTextAt, needsReply, looksLikeDeliverable,
+  // exported for unit tests
+  commandPromptText, summarizeToolInput, isSideEffect,
+};

@@ -4,7 +4,8 @@ const path = require('path');
 const os = require('os');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
-const DATA_DIR = path.join(os.homedir(), '.claude-dashboard');
+// dashboard's own data dir; override (e.g. in tests) with CLAUDE_DASH_DATA_DIR
+const DATA_DIR = process.env.CLAUDE_DASH_DATA_DIR || path.join(os.homedir(), '.claude-dashboard');
 
 module.exports = {
   PORT: parseInt(process.env.PORT || '7777', 10),

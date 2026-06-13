@@ -42,8 +42,14 @@ node server/src/index.js          # foreground; http://localhost:7777
 curl -s localhost:7777/api/sessions | python3 -m json.tool   # quick sanity check
 ```
 
-No tests yet. Verify changes by running the server with real live sessions (start
-`claude` somewhere) and watching the dashboard.
+Unit tests use Node's built-in runner (no deps): `npm test` (or `node --test`) runs
+everything in `test/`. They cover the pure-logic modules — transcript parsing/heuristics,
+fsio, title cleaning/sanitizing, the markdown renderer. The DOM frontend (`app.js`) and
+the AppleScript/tmux backends are integration-only; verify those by running the server
+with real live sessions and watching the dashboard. CI runs `node --test` on every PR
+(`.github/workflows/test.yml`). To keep a function testable, export it (several are
+exported solely for tests, noted as such); `CLAUDE_DASH_DATA_DIR` overrides the data dir
+so persistence tests never touch the real `~/.claude-dashboard`.
 
 ## Hard rules & conventions
 

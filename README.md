@@ -1,5 +1,7 @@
 # Claude Dashboard
 
+[![tests](https://github.com/amitmandke/claude-dashboard/actions/workflows/test.yml/badge.svg)](https://github.com/amitmandke/claude-dashboard/actions/workflows/test.yml)
+
 A local web dashboard for every Claude Code session running on this machine: live status,
 the prompt each session started with, every action taken, flashing alerts when a session
 needs you, one-click Approve/Deny for permission prompts, and a launcher for new sessions.
