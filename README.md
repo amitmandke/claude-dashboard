@@ -1,7 +1,7 @@
 # Claude Dashboard
 
 [![tests](https://github.com/amitmandke/claude-dashboard/actions/workflows/test.yml/badge.svg)](https://github.com/amitmandke/claude-dashboard/actions/workflows/test.yml)
-[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/amitmandke/claude-dashboard/badges/coverage.json)](https://github.com/amitmandke/claude-dashboard/actions/workflows/test.yml)
+[![coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/amitmandke/claude-dashboard/badges/coverage.json&cacheSeconds=300)](https://github.com/amitmandke/claude-dashboard/actions/workflows/test.yml)
 
 A local web dashboard for every Claude Code session running on this machine: live status,
 the prompt each session started with, every action taken, flashing alerts when a session
