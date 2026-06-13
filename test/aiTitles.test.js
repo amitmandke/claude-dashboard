@@ -1,9 +1,27 @@
 'use strict';
 
+// Point the data dir at a temp dir BEFORE requiring the module, and seed a
+// cache file, so the get()/load() path is exercised without touching the real
+// ~/.claude-dashboard. node --test isolates each test file in its own process.
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'aititles-'));
+process.env.CLAUDE_DASH_DATA_DIR = dataDir;
+fs.writeFileSync(
+  path.join(dataDir, 'ai-titles.json'),
+  JSON.stringify({ 'sess-cached': { title: 'Cached title', turnKey: 't1', at: 1 } })
+);
+
 const { test } = require('node:test');
 const assert = require('node:assert');
 
 const ai = require('../server/src/services/aiTitles');
+
+test('get returns a cached title and null for unknown sessions', () => {
+  assert.equal(ai.get('sess-cached'), 'Cached title');
+  assert.equal(ai.get('sess-unknown'), null);
+});
 
 test('sanitize strips quotes, markdown emphasis, and trailing period', () => {
   assert.equal(ai.sanitize('**Reviewing open PRs**'), 'Reviewing open PRs');
