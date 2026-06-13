@@ -131,3 +131,8 @@ function renderMarkdown(src) {
   flushAll();
   return out.join('\n');
 }
+
+// browser uses these as globals; Node (tests) can require them
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { renderMarkdown, highlight, escapeHtml };
+}

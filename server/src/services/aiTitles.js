@@ -162,4 +162,4 @@ function requestRefresh(session) {
   });
 }
 
-module.exports = { get, requestRefresh };
+module.exports = { get, requestRefresh, sanitize, turnKeyFor, buildPrompt };

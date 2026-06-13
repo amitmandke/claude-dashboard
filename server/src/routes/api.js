@@ -208,4 +208,4 @@ async function handle(req, res, url) {
   return true;
 }
 
-module.exports = { handle };
+module.exports = { handle, cleanTitle };

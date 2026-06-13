@@ -10,7 +10,8 @@
     "web"
   ],
   "scripts": {
-    "start": "node server/src/index.js"
+    "start": "node server/src/index.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=18"
