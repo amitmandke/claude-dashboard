@@ -308,6 +308,45 @@ main {
 .card:hover .rename-btn { opacity: 1; }
 .rename-btn:hover { color: var(--text); }
 
+.expand-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--dim);
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 7px;
+  cursor: pointer;
+}
+.expand-btn:hover { color: var(--accent); border-color: var(--card-edge); }
+
+/* --- expanded card: large centered overlay; collapses back into the grid --- */
+.card-backdrop {
+  position: fixed;
+  inset: 0;
+  background: var(--backdrop);
+  z-index: 20;
+}
+.card.expanded {
+  position: fixed;
+  z-index: 21;
+  top: 4vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(960px, 92vw);
+  height: 88vh;
+  max-width: 96vw;
+  max-height: 92vh;
+  /* drag the bottom-right corner to resize */
+  resize: both;
+  overflow: auto;
+  box-shadow: 0 18px 60px #00000066;
+}
+/* let the feed breathe in the larger frame */
+.card.expanded .feed { max-height: 48vh; }
+.card.expanded .screen-mirror { max-height: 40vh; }
+.card.expanded .expand-btn { color: var(--accent); }
+
 .end-btn {
   background: transparent;
   border: 1px solid transparent;
