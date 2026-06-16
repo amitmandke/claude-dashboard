@@ -38,6 +38,16 @@ function readBody(req) {
 // aiTitles.js); the terminal title Claude Code sets (a summary of only the
 // latest exchange); the first prompt; the folder name.
 
+// compose the prompt that gets typed into a freshly launched session: a skill
+// becomes the leading `/skill`, with any prompt as its arguments. Mirrors the
+// New Session launcher in app.js so the API and the web form behave identically.
+function composeLaunchPrompt(skill, prompt) {
+  const p = (prompt || '').trim();
+  const s = (skill || '').trim();
+  if (!s) return p;
+  return `/${s} ${p}`.trim();
+}
+
 function cleanTitle(raw) {
   if (!raw) return null;
   const t = raw
@@ -130,10 +140,22 @@ async function handle(req, res, url) {
     if (!fs.existsSync(cwd) || !fs.statSync(cwd).isDirectory()) {
       return json(res, 400, { error: `not a directory: ${cwd}` }), true;
     }
-    const prompt = (body.prompt || '').trim();
-    console.log(`[${new Date().toISOString()}] ACTION spawn cwd=${cwd} prompt=${prompt.length} chars`);
+    const skill = (body.skill || '').trim();
+    if (skill && !/^[\w:-]+$/.test(skill)) {
+      return json(res, 400, { error: `invalid skill name: ${skill}` }), true;
+    }
+    // compose the leading slash-command here so external callers can pass a bare
+    // skill name + prompt without knowing the `/skill args` convention
+    const prompt = composeLaunchPrompt(skill, body.prompt);
+    console.log(
+      `[${new Date().toISOString()}] ACTION spawn cwd=${cwd}` +
+      (skill ? ` skill=${skill}` : '') + ` prompt=${prompt.length} chars`
+    );
     await terminals.spawnSession(cwd, prompt);
-    json(res, 200, { ok: true });
+    // the new claude process writes its own ~/.claude/sessions/<pid>.json a beat
+    // later, so the dashboard surfaces the card on its next scan — we can't return
+    // the pid synchronously here
+    json(res, 200, { ok: true, cwd, prompt });
     return true;
   }
 
@@ -208,4 +230,4 @@ async function handle(req, res, url) {
   return true;
 }
 
-module.exports = { handle, cleanTitle };
+module.exports = { handle, cleanTitle, composeLaunchPrompt };
