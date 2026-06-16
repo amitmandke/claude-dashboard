@@ -223,7 +223,7 @@ server/src/
 | `/api/sessions/:pid/end` | POST | Esc → `/exit` → close pane; 409 if the session won't exit |
 | `/api/projects` | GET | recent project dirs for the New Session picker |
 | `/api/skills?cwd=` | GET | skills/commands available for a session in that dir |
-| `/api/sessions/new` | POST `{cwd, prompt?}` | open a new iTerm2 tab and launch `claude` there |
+| `/api/sessions/new` | POST `{cwd, prompt?, skill?}` | open a new iTerm2 tab and launch `claude` there; `skill` is composed into a leading `/skill` (with `prompt` as its arguments) server-side, so callers needn't know the slash-command convention. Returns `{ok, cwd, prompt}` — the new pid isn't known synchronously (the card appears on the next scan). |
 
 ### Send-message sequence
 
@@ -236,6 +236,18 @@ UI Send ─► POST /send ─► ps -E <pid> → ITERM_SESSION_ID (cached)
 The two-step write matters: Claude Code's TUI treats a burst of input as a paste, so a
 newline sent together with the text is absorbed into the pasted content instead of
 submitting it. Typing first and sending Enter after a short pause submits reliably.
+
+### Launching from other tools (launch links)
+
+`POST /api/sessions/new` is the canonical launch API; the New Session form and any
+external caller (a script, an MCP tool, or another Claude session) hit the same endpoint
+with `{cwd, prompt?, skill?}`. For the common case of one session handing off work to a
+new one, the dashboard serves a confirmation page at **`/launch.html?cwd=…&prompt=…&skill=…`**:
+a Claude session can emit that URL in its output, and clicking it opens a page that shows
+the target directory, skill, and prompt with a **Launch** button. The button is what calls
+the POST API — the bare link never spawns on its own. This keeps the action off a plain
+GET (no drive-by spawns from link prefetch or an accidental click) while still being a
+single clickable link, and it lets the user see exactly what will run before it does.
 
 ## 6. Design decisions & trade-offs
 
