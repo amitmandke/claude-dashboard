@@ -37,4 +37,14 @@ module.exports = {
   CLAUDE_BIN: process.env.CLAUDE_DASH_CLAUDE_BIN || 'claude',
   // headless runs execute here so the registry can recognize and hide them
   HEADLESS_CWD: path.join(DATA_DIR, 'headless'),
+
+  // Candidate sessions — a launchable, prioritized pending list a producer (a
+  // running session, a watcher, or the user) adds to; persisted in
+  // ~/.claude-dashboard/candidates.json. Caps keep the list and concurrency sane.
+  CANDIDATES_MAX_PENDING: parseInt(process.env.CLAUDE_DASH_MAX_PENDING || '100', 10),
+  CANDIDATES_MAX_CONCURRENT: parseInt(process.env.CLAUDE_DASH_MAX_CONCURRENT || '6', 10),
+  // dismissed items linger as history for a while; launched ones clear sooner
+  // since they've already become a live session (you can also ✕ Clear either now).
+  CANDIDATES_RETENTION_DAYS: parseInt(process.env.CLAUDE_DASH_RETENTION_DAYS || '7', 10),
+  CANDIDATES_LAUNCHED_RETENTION_HOURS: parseInt(process.env.CLAUDE_DASH_LAUNCHED_RETENTION_HOURS || '2', 10),
 };

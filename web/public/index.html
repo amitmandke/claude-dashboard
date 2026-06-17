@@ -11,12 +11,32 @@
 </head>
 <body>
   <header>
-    <h1>Claude Dashboard</h1>
-    <button id="theme-toggle" class="ghost-btn theme-toggle" title="Switch theme">🌙</button>
-    <button id="new-session-btn" class="primary-btn">＋ New Session</button>
-    <!-- visible only while the SSE stream is down — silence means healthy -->
-    <div id="conn" class="conn" hidden></div>
+    <div class="header-bar">
+      <h1>Claude Dashboard</h1>
+      <button id="theme-toggle" class="ghost-btn theme-toggle" title="Switch theme">🌙</button>
+      <!-- visible only while the SSE stream is down — silence means healthy -->
+      <div id="conn" class="conn" hidden></div>
+    </div>
+    <!-- in-page view toggle: live sessions vs the launchable candidate list.
+         One page, one SSE stream — these just switch which view is shown.
+         A Chrome/editor-style tab strip sitting on the header's baseline. -->
+    <nav id="tabs" class="tabs">
+      <button class="tab active" data-view="sessions">Sessions
+        <span id="sess-badge" class="tab-badge" hidden>0</span>
+      </button>
+      <button class="tab" data-view="candidates">Candidates
+        <span id="cand-badge" class="tab-badge" hidden>0</span>
+      </button>
+    </nav>
   </header>
+
+  <!-- ===== Sessions view ===== -->
+  <div id="sessions-view">
+
+  <!-- per-tab create action, mirroring the Candidates tab's "＋ New candidate" -->
+  <div class="sessions-toolbar">
+    <button id="new-session-btn" class="primary-btn">＋ New Session</button>
+  </div>
 
   <!-- Summary bar: clickable tiles that filter the grid below -->
   <nav id="stats" class="stats">
@@ -54,6 +74,25 @@
     <span>Start one with <code>claude</code> in any terminal, use <b>＋ New Session</b> above,
     or clear the active filter.</span>
   </div>
+
+  </div><!-- /#sessions-view -->
+
+  <!-- ===== Candidates view ===== -->
+  <div id="candidates-view" hidden>
+    <div class="cand-toolbar">
+      <input id="cand-filter" type="search" autocomplete="off"
+             placeholder="Filter candidates — skill, prompt, reason, directory…">
+      <span id="cand-count" class="cand-count"></span>
+      <button id="new-candidate-btn" class="primary-btn">＋ New candidate</button>
+    </div>
+    <main id="cand-grid"></main>
+    <div id="cand-empty" class="empty" hidden>
+      No candidates yet.<br>
+      <span>A running session, a watcher, or <b>＋ New candidate</b> can propose work here;
+      it waits until you <b>Launch</b> it.</span>
+    </div>
+    <div id="cand-nomatch" class="empty" hidden>No candidates match your filter.</div>
+  </div><!-- /#candidates-view -->
 
   <template id="card-template">
     <section class="card">
@@ -106,6 +145,32 @@
     </section>
   </template>
 
+  <template id="candidate-template">
+    <section class="cand-card">
+      <div class="cand-head">
+        <span class="cand-skill"></span>
+        <span class="cand-priority" title="Priority — higher launches first"></span>
+        <span class="cand-statebadge"></span>
+      </div>
+      <p class="cand-prompt" title="Click to edit the prompt"></p>
+      <p class="cand-reason"></p>
+      <div class="cand-meta">
+        <span class="cand-cwd"></span>
+        <span class="cand-source"></span>
+        <a class="cand-ref" target="_blank" rel="noopener" hidden>↗ source</a>
+      </div>
+      <div class="cand-actions">
+        <button class="cand-launch primary-btn" title="Spawn this session now">▷ Launch</button>
+        <button class="cand-prio cand-prio-up ghost-btn" title="Raise priority">▲</button>
+        <button class="cand-prio cand-prio-down ghost-btn" title="Lower priority">▼</button>
+        <button class="cand-skill-btn ghost-btn" title="Change the skill">⌥ Skill</button>
+        <button class="cand-dismiss ghost-btn" title="Dismiss this candidate">✕ Dismiss</button>
+        <button class="cand-undismiss ghost-btn" title="Restore to the pending list" hidden>↩ Restore</button>
+        <button class="cand-clear ghost-btn" title="Remove from the list now" hidden>✕ Clear</button>
+      </div>
+    </section>
+  </template>
+
   <dialog id="new-session-dialog">
     <form id="new-session-form">
       <h2>Start a new Claude session</h2>
@@ -125,6 +190,36 @@
       <div class="dialog-actions">
         <button type="button" id="ns-cancel" class="ghost-btn">Cancel</button>
         <button type="submit" class="primary-btn">Launch in iTerm2</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="new-candidate-dialog">
+    <form id="new-candidate-form">
+      <h2>New candidate session</h2>
+      <p class="hint">A candidate waits in the list until you launch it — nothing runs now.</p>
+      <label>Project directory
+        <input id="nc-cwd" list="nc-projects" placeholder="/path/to/project" required autocomplete="off">
+        <datalist id="nc-projects"></datalist>
+      </label>
+      <label>Skill <span class="hint">(optional — same as typing /skill in Claude)</span>
+        <select id="nc-skill">
+          <option value="">(none — free-form prompt)</option>
+        </select>
+        <span class="skill-desc hint" id="nc-skill-desc"></span>
+      </label>
+      <label><span id="nc-prompt-label">Prompt</span> <span class="hint">(optional)</span>
+        <textarea id="nc-prompt" rows="3" placeholder="What should this session work on?"></textarea>
+      </label>
+      <label>Reason <span class="hint">(why this is worth doing — shown on the card)</span>
+        <input id="nc-reason" placeholder="e.g. failing CI on the auth module" autocomplete="off">
+      </label>
+      <label>Priority <span class="hint">(higher launches first)</span>
+        <input id="nc-priority" type="number" value="0" step="1">
+      </label>
+      <div class="dialog-actions">
+        <button type="button" id="nc-cancel" class="ghost-btn">Cancel</button>
+        <button type="submit" class="primary-btn">Add candidate</button>
       </div>
     </form>
   </dialog>

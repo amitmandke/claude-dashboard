@@ -57,4 +57,15 @@ function truncate(s, n) {
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
 }
 
-module.exports = { readHead, readTail, parseLines, truncate };
+/**
+ * Write `obj` as pretty JSON to `file` atomically: write a sibling temp file,
+ * then rename over the target so a reader never sees a half-written file (and a
+ * crash mid-write leaves the previous version intact). Caller ensures the dir.
+ */
+function writeJsonAtomic(file, obj) {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2));
+  fs.renameSync(tmp, file);
+}
+
+module.exports = { readHead, readTail, parseLines, truncate, writeJsonAtomic };

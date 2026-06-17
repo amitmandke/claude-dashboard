@@ -65,7 +65,8 @@
 
     <div class="actions">
       <button id="cancel">Cancel</button>
-      <button id="launch" class="primary">Launch</button>
+      <button id="candidate">Add to candidates</button>
+      <button id="launch" class="primary">Launch now</button>
     </div>
     <div class="status" id="status"></div>
   </div>
@@ -92,35 +93,50 @@
 
     const status = $('status');
     const launchBtn = $('launch');
+    const candidateBtn = $('candidate');
 
     if (!cwd) {
       status.textContent = 'Missing required "cwd" parameter.';
       status.className = 'status err';
       launchBtn.disabled = true;
+      candidateBtn.disabled = true;
     }
 
     $('cancel').addEventListener('click', () => window.close());
 
-    launchBtn.addEventListener('click', async () => {
-      launchBtn.disabled = true;
+    // POST helper shared by both buttons: disable, show progress, report result.
+    async function submit(path, busyMsg, okHtml, body) {
+      launchBtn.disabled = candidateBtn.disabled = true;
       status.className = 'status';
-      status.textContent = 'Launching…';
+      status.textContent = busyMsg;
       try {
-        const res = await fetch('/api/sessions/new', {
+        const res = await fetch(path, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ cwd, skill, prompt }),
+          body: JSON.stringify(body),
         });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
         status.className = 'status ok';
-        status.innerHTML = 'Launched — it will appear in the <a href="/">dashboard</a> shortly.';
+        status.innerHTML = okHtml;
       } catch (e) {
         status.className = 'status err';
         status.textContent = 'Failed: ' + e.message;
-        launchBtn.disabled = false;
+        launchBtn.disabled = candidateBtn.disabled = false;
       }
-    });
+    }
+
+    // Launch now: spawns immediately. Add to candidates: stages it in the
+    // launchable list so you can review/reprioritize and launch it later.
+    launchBtn.addEventListener('click', () =>
+      submit('/api/sessions/new', 'Launching…',
+        'Launched — it will appear in the <a href="/">dashboard</a> shortly.',
+        { cwd, skill, prompt }));
+
+    candidateBtn.addEventListener('click', () =>
+      submit('/api/candidates', 'Adding…',
+        'Added — review it under <a href="/">Candidates</a> in the dashboard.',
+        { cwd, skill, prompt, source: 'manual' }));
   </script>
 </body>
 </html>
