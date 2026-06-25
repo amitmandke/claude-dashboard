@@ -50,7 +50,7 @@ creating the window — creating a window mid-launch fails with opaque AppleEven
 | App | Folder | Tech | Role |
 |---|---|---|---|
 | dashboard-server | `server/` | Node.js ≥18, no deps | Scans registry + transcripts, pushes live state over SSE, drives iTerm2 (send input, focus panes, launch new sessions) |
-| dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog |
+| dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Two in-page tabs (Sessions / Candidates): summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog; the Candidates tab lists launchable pending work with a text filter |
 
 A single `node server/src/index.js` runs everything; the web app is static files served
 by the same process. `scripts/install-launchd.sh` installs it as a macOS launchd user
@@ -63,7 +63,7 @@ the fact.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
-│ Claude Dashboard  [🌙]                                              [＋ New Session]  │
+│ Claude Dashboard  [Sessions][Candidates ③]  [🌙]                    [＋ New Session]  │
 ├──────────────────────────────────────────────────────────────────────────────────────┤
 │ ┌────────────────┬─────────┬────────────────┬──────────────────────┬───────────────┐ │
 │ │ 4              │ 1       │ 1              │ 1                    │ 1             │ │
@@ -171,6 +171,54 @@ there would deny the tool, so **Always is shown only when the prompt actually of
 don't-ask-again option**; on a two-option dialog it is hidden. Approve maps to the "Yes"
 digit (option 1), Deny always sends Esc.
 
+### Candidates view (second tab)
+
+A **candidate session** is a session you *could* launch but haven't yet — a concrete plan
+(`cwd` + optional skill + prompt) waiting in a list with a **reason** and a **priority**.
+It decouples *"something proposes work"* from *"a session actually runs"*: nothing spawns
+until you choose it. Candidates have several **producers** — a running Claude session that
+discovers follow-up work and calls `POST /api/candidates`, the **Add to candidates** button
+on the launch page, and the **New candidate** form in the UI (watchers are a later
+producer; see §7). All converge on one list.
+
+The dashboard is still **one page and one SSE stream**: a header **tab toggle** flips
+between the Sessions view (everything above) and the Candidates view. The Candidates tab
+carries a **count badge** of pending items, visible from either tab so you notice new work
+without switching.
+
+```
+ Claude Dashboard  [Sessions][Candidates ③]  [🌙]              [＋ New Session]
+ ┌────────────────────────────────────────────────────────────────────────────┐
+ │ [ Filter — skill, prompt, reason, directory…        ]  3 pending  [＋ New]   │
+ ├────────────────────────────────────────────────────────────────────────────┤
+ │ ┌────────────────────────────────┐  ┌────────────────────────────────┐      │
+ │ │ /review-pr          P2         │  │ /debug          P1             │      │
+ │ │ Review the PR linked in #eng   │  │ Investigate the null deref…    │      │
+ │ │ reason: failing CI on auth     │  │ reason: stack trace in #eng    │      │
+ │ │ ~/code/api-service · session ↗ │  │ ~/code/webapp · manual         │      │
+ │ │ [▷ Launch][▲][▼][⌥ Skill][✕]   │  │ [▷ Launch][▲][▼][⌥ Skill][✕]   │      │
+ │ └────────────────────────────────┘  └────────────────────────────────┘      │
+ └────────────────────────────────────────────────────────────────────────────┘
+```
+
+Each card shows the **skill**, the **prompt**, the **reason**, the directory, and the
+**source/producer** (+ a provenance link when present). The **filter** box narrows the
+visible cards by case-insensitive substring across skill / prompt / reason / cwd / source —
+purely client-side, since the full list is already in the snapshot. Per-card actions:
+
+| Action | Effect |
+|---|---|
+| **▷ Launch** | spawn it via the same path as New Session; the candidate is marked `launched` and a normal live card appears on the Sessions tab. Disabled (with an "N running" hint) when the live-session count is at `maxConcurrent`. |
+| **▲ / ▼** | raise / lower priority; the list re-sorts (higher launches first, oldest-first within a priority) |
+| **⌥ Skill** / click the prompt | edit the plan before launching (skill / prompt) |
+| **✕ Dismiss** / **↩ Restore** | drop a pending item / restore a dismissed one |
+| **✕ Clear** | remove a `launched`/`dismissed` item from the list immediately |
+
+`launched` and `dismissed` items stay in the list (greyed, still filterable) as a short
+history of what was proposed and what you did with it. They auto-prune on a retention sweep —
+`launched` quickly (hours, since it's already a live session), `dismissed` after a few days —
+or you can **✕ Clear** one right away.
+
 ## 4. User interactions
 
 1. **Glance** — open `http://localhost:7777`; every live session appears as a card within ~1.5s, updating live over SSE (no refresh ever needed). Connection health is silent when good — a red "reconnecting…" appears in the header only while the stream is down.
@@ -190,6 +238,7 @@ digit (option 1), Deny always sends Esc.
 14. **Observe-only degradation** — sessions in unscriptable terminals keep full observation; their composer/buttons are disabled with an explanatory placeholder.
 15. **Switch theme** — the header button cycles 🌗 auto (follows the system appearance, live) → ☀️ light → 🌙 dark; auto is the default, an explicit choice persists across visits.
 16. **Expand a card** — ⛶ in the card header blows it up to a large centered, resizable overlay for a roomier feed/mirror; ⛶ again, Esc, or a backdrop click returns it to its grid spot.
+17. **Queue work as a candidate** — switch to the **Candidates** tab to see launchable pending work (added by a running session, the launch page's "Add to candidates", or the New candidate form). Filter the list, reprioritize (▲/▼), edit the skill/prompt, then **Launch** (becomes a live session) or **Dismiss**. The tab's count badge surfaces new candidates while you're on the Sessions tab.
 
 ## 5. Backend components
 
@@ -207,6 +256,8 @@ server/src/
 │   ├── aiTitles.js           AI-derived titles via headless `claude -p` (cache: ai-titles.json)
 │   ├── projects.js           recent project dirs from ~/.claude/history.jsonl
 │   ├── skills.js             skill/command discovery (~/.claude + <cwd>/.claude)
+│   ├── candidates/
+│   │   └── store.js          launchable candidate list (~/.claude-dashboard/candidates.json)
 │   └── terminals/
 │       ├── index.js          backend dispatcher: env detection → route, spawn picker
 │       ├── procEnv.js        pid → {TERM_PROGRAM, TMUX, ITERM_SESSION_ID, tty} via ps -E
@@ -214,7 +265,7 @@ server/src/
 │       ├── appleTerminal.js  Terminal.app via AppleScript + System Events
 │       └── tmux.js           tmux CLI (pid ancestry → pane)
 └── utils/
-    └── fsio.js               bounded head/tail file reads, JSONL parse, truncate
+    └── fsio.js               bounded head/tail file reads, JSONL parse, truncate, atomic JSON write
 ```
 
 ### API contract
@@ -233,6 +284,19 @@ server/src/
 | `/api/projects` | GET | recent project dirs for the New Session picker |
 | `/api/skills?cwd=` | GET | skills/commands available for a session in that dir |
 | `/api/sessions/new` | POST `{cwd, prompt?, skill?}` | open a new iTerm2 tab and launch `claude` there; `skill` is composed into a leading `/skill` (with `prompt` as its arguments) server-side, so callers needn't know the slash-command convention. Returns `{ok, cwd, prompt}` — the new pid isn't known synchronously (the card appears on the next scan). |
+| `/api/candidates` | GET | the candidate list (also carried in the SSE snapshot) |
+| `/api/candidates` | POST `{cwd, skill?, prompt?, priority?, reason?, source?, producer?, ref?, dedupeKey?}` | add a fully-specified candidate; reuses `/sessions/new`'s validation; deduped on `dedupeKey`; rejected (429) past `maxPending`. Returns `{id}`. |
+| `/api/candidates/:id` | PATCH `{prompt?, skill?, priority?}` | edit / reprioritize a candidate |
+| `/api/candidates/:id/launch` | POST | spawn it (same path as `/sessions/new`), mark `launched`; 409 at the `maxConcurrent` cap |
+| `/api/candidates/:id/dismiss` · `/undismiss` | POST | mark `dismissed` / restore to `pending` |
+| `/api/candidates/:id` | DELETE | remove the item from the list now (the ✕ Clear action) |
+
+The SSE snapshot is `{sessions, candidates, caps:{maxConcurrent, maxPending}, now}` — the
+candidate list rides the same 1.5 s diff-and-push loop, so any add/edit/launch/dismiss/clear
+reaches every open dashboard immediately. A once-a-minute retention sweep piggy-backs the
+snapshot tick, pruning aged-out history: `launched` items after a short window (hours — set
+by `launchedRetentionHours`, they're already live sessions) and `dismissed` items after
+`retentionDays`.
 
 ### Send-message sequence
 
@@ -256,7 +320,10 @@ a Claude session can emit that URL in its output, and clicking it opens a page t
 the target directory, skill, and prompt with a **Launch** button. The button is what calls
 the POST API — the bare link never spawns on its own. This keeps the action off a plain
 GET (no drive-by spawns from link prefetch or an accidental click) while still being a
-single clickable link, and it lets the user see exactly what will run before it does.
+single clickable link, and it lets the user see exactly what will run before it does. The
+page offers two buttons: **Launch now** (spawns immediately) and **Add to candidates**
+(stages it on the Candidates tab for later review), so the emitting session lets you pick
+immediate vs. queued-for-review.
 
 ## 6. Design decisions & trade-offs
 
@@ -270,10 +337,19 @@ single clickable link, and it lets the user see exactly what will run before it 
 - **AI-derived titles via headless `claude -p`, not the API** — the terminal title Claude Code writes summarizes only the *latest exchange*, so a side question ("is it stuck?") renames a PR-review session. `aiTitles.js` instead feeds the starting prompt plus the recent activity feed to Claude and asks for the session's *primary task*, weighing sustained activity over the last message. It shells out to `claude -p --model haiku` (draws on the user's existing subscription; no Console account or `ANTHROPIC_API_KEY` required) rather than calling the API. Cost controls: regenerate only when a session gains a new user turn (tracked by a per-session turn key, cached with the title in `~/.claude-dashboard/ai-titles.json`), one generation at a time, 2-minute back-off after failures, 90s timeout. Headless runs execute in `~/.claude-dashboard/headless` with a `CLAUDE_DASH_INTERNAL=1` env marker; the session registry skips any registry entry with that cwd, so the dashboard's own workers never show up as cards. Opt out with `CLAUDE_DASH_AI_TITLES=0`; on any failure the title chain silently falls back to the terminal title.
 - **Dark and light themes via CSS variables only** — every color in `style.css` lives in a variable on `:root` (dark, the default) with a complete counterpart under `[data-theme="light"]`; no rule hardcodes a color. The header toggle cycles three modes — 🌗 auto (follows `prefers-color-scheme` live, so scheduled OS day/night switching works), ☀️ light, 🌙 dark — flipping `data-theme` on `<html>`. Auto is the default (nothing stored); an explicit choice persists in `localStorage`, and an inline `<head>` script applies the resolved theme before the stylesheet loads (no flash). The reply popup follows the "Markdown Reader" extension's matching theme pair (one-dark / one-light). Deliberate exception: the terminal mirror stays dark in both themes — it mirrors a real terminal pane.
 - **Subagent (sidechain) events filtered out** of the feed — keeps the action feed readable; the main-chain Agent tool call still shows.
+- **Candidates are inert data, launched explicitly** — a candidate is a stored plan, not a running thing; the producer API (`POST /api/candidates`) can't make anything spawn on its own, so a session or external tool proposing work never bypasses your review. Launch reuses the exact `/sessions/new` validation + spawn path (no second way to start a session), and is gated by `maxConcurrent` so a backlog can't flood the machine; `maxPending` bounds the list (adds past it are rejected and logged, never silently dropped). The list is a single JSON file written atomically by the one event loop — same single-writer pattern as titles/AI-titles, no locking. **In-page tabs, not a second page**: the Candidates view shares the one SSE stream, theme, and toast plumbing — it's a view toggle, so launching a candidate and watching it become a live card stays within one app.
 - **`reply` vs `done` is a heuristic** — question detection plus the undelivered-deliverable check. Side-effect matching is deliberately invocation-shaped (`git push`, `gh pr comment`) rather than word-shaped: "show PR commits" must not count as a delivery. It can still misclassify; the cost of an error is just a wrong tile/animation, and the banner shows the actual closing text so the user can judge.
 
 ## 7. Possible future extensions
 
+- **Candidate producers — watchers & the agentic classifier.** Candidates are built to take
+  producers beyond the manual/launch-page/running-session paths shipped today. The next one
+  is a **Slack watcher**: an in-process poll loop that turns an allowlisted reaction/mention
+  into a candidate. It (and a `POST /api/candidates/from-text` endpoint for a session that
+  only has free text) would share a **`classify.js`** — a headless `claude -p` reader
+  (reusing the `aiTitles.js` machinery) that reads the message plus the cwd's skill list and
+  returns a skill-tagged plan `{skill, prompt, reason, confidence}`, editable before launch.
+  The candidate store, API, and UI here are the foundation that work builds on.
 - Session history view (ended sessions, durations, outcomes)
 - Desktop notifications (Notification API) when a session flips to `waiting`
 - Backends for kitty / WezTerm (both have remote-control CLIs)

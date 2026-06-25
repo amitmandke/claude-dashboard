@@ -25,7 +25,7 @@ test('get returns a cached title and null for unknown sessions', () => {
 
 test('sanitize strips quotes, markdown emphasis, and trailing period', () => {
   assert.equal(ai.sanitize('**Reviewing open PRs**'), 'Reviewing open PRs');
-  assert.equal(ai.sanitize('"Fix IPAM race".'), 'Fix IPAM race');
+  assert.equal(ai.sanitize('"Fix the parser race".'), 'Fix the parser race');
   assert.equal(ai.sanitize('# _Title_'), 'Title');
 });
 

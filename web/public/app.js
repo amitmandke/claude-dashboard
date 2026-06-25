@@ -4,6 +4,7 @@ const grid = document.getElementById('grid');
 const conn = document.getElementById('conn');
 const empty = document.getElementById('empty');
 const template = document.getElementById('card-template');
+const candTemplate = document.getElementById('candidate-template');
 
 const BASE_TITLE = 'Claude Dashboard';
 let titleFlasher = null;
@@ -52,9 +53,9 @@ function toast(msg, ok = false) {
   setTimeout(() => el.remove(), 4000);
 }
 
-async function post(path, body) {
+async function send(method, path, body) {
   const res = await fetch(path, {
-    method: 'POST',
+    method,
     headers: { 'Content-Type': 'application/json' },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -63,6 +64,9 @@ async function post(path, body) {
     throw new Error(data.error || res.statusText);
   }
 }
+const post = (path, body) => send('POST', path, body);
+const patch = (path, body) => send('PATCH', path, body);
+const del = (path) => send('DELETE', path);
 
 // ---------------------------------------------------------------- card rendering
 
@@ -479,6 +483,13 @@ function render(data) {
 
   const counts = updateStats(sessions);
 
+  // live session count on the Sessions tab (mirrors the Candidates badge)
+  const sessBadge = document.getElementById('sess-badge');
+  sessBadge.textContent = sessions.length;
+  sessBadge.hidden = sessions.length === 0;
+
+  renderCandidates(data);
+
   // live combined usage across the active sessions (recomputed every tick)
   const ctx = sessions.reduce((a, s) => a + (s.contextTokens || 0), 0);
   const out = sessions.reduce((a, s) => a + (s.recentOutputTokens || 0), 0);
@@ -570,6 +581,254 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
     updateSkillUi();
     toast('Session launching — it will appear here in a few seconds', true);
   }, '✓ Launched');
+});
+
+// ---------------------------------------------------------------- candidates
+
+// in-page view toggle: live Sessions vs the launchable Candidates list. One
+// page, one SSE stream — this just switches which view is visible.
+let activeView = 'sessions';
+function setView(view) {
+  activeView = view === 'candidates' ? 'candidates' : 'sessions';
+  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === activeView));
+  document.getElementById('sessions-view').hidden = activeView !== 'sessions';
+  document.getElementById('candidates-view').hidden = activeView !== 'candidates';
+  // keep the URL hash in sync so a refresh / bookmark lands on the same tab
+  const want = activeView === 'candidates' ? '#candidates' : '';
+  if (location.hash !== want) history.replaceState(null, '', want || location.pathname);
+}
+document.getElementById('tabs').addEventListener('click', (e) => {
+  const tab = e.target.closest('.tab');
+  if (tab) setView(tab.dataset.view);
+});
+window.addEventListener('hashchange', () => setView(location.hash.slice(1)));
+setView(location.hash.slice(1) || 'sessions');
+
+// client-side filter: narrows the visible candidates by substring across the
+// fields that matter (skill, prompt, reason, directory, source). The full list
+// is already in the snapshot, so this is pure frontend — no server round-trip.
+let candFilter = '';
+const candFilterEl = document.getElementById('cand-filter');
+candFilterEl.addEventListener('input', () => {
+  candFilter = candFilterEl.value;
+  if (lastData) renderCandidates(lastData);
+});
+
+function candMatches(c, q) {
+  if (!q) return true;
+  const hay = [c.action.skill, c.action.prompt, c.reason, c.action.cwd, c.source, c.producer]
+    .filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(q);
+}
+
+// After any candidate mutation, re-pull the authoritative list and re-render
+// right away — don't wait for the next SSE tick (which may lag or be mid-
+// reconnect), or a cleared/changed card lingers on screen until then.
+async function refreshCandidates() {
+  try {
+    const res = await fetch('/api/candidates');
+    const { candidates } = await res.json();
+    if (lastData) {
+      lastData.candidates = candidates;
+      renderCandidates(lastData);
+    }
+  } catch { /* the next SSE snapshot will reconcile */ }
+}
+
+async function editPrompt(c) {
+  const next = prompt('Edit the prompt for this candidate:', c.action.prompt || '');
+  if (next === null) return;
+  try { await patch(`/api/candidates/${c.id}`, { prompt: next }); await refreshCandidates(); }
+  catch (err) { toast('Edit failed: ' + err.message); }
+}
+
+async function editSkill(c) {
+  const next = prompt('Skill (bare name like review-pr; empty for none):', c.action.skill || '');
+  if (next === null) return;
+  try { await patch(`/api/candidates/${c.id}`, { skill: next.trim() }); await refreshCandidates(); }
+  catch (err) { toast('Skill change failed: ' + err.message); }
+}
+
+async function reprioritize(c, delta) {
+  try { await patch(`/api/candidates/${c.id}`, { priority: (c.priority || 0) + delta }); await refreshCandidates(); }
+  catch (err) { toast('Reprioritize failed: ' + err.message); }
+}
+
+function buildCandidate(c, ctx) {
+  const card = candTemplate.content.cloneNode(true).querySelector('.cand-card');
+  card.dataset.status = c.status;
+  card.classList.toggle('cand-inactive', c.status !== 'pending');
+
+  const skillEl = card.querySelector('.cand-skill');
+  skillEl.textContent = c.action.skill ? '/' + c.action.skill : '(no skill)';
+  skillEl.classList.toggle('cand-noskill', !c.action.skill);
+  card.querySelector('.cand-priority').textContent = 'P' + (c.priority || 0);
+
+  const stateBadge = card.querySelector('.cand-statebadge');
+  stateBadge.textContent = c.status;
+  stateBadge.hidden = c.status === 'pending';
+
+  const promptEl = card.querySelector('.cand-prompt');
+  promptEl.textContent = c.action.prompt || '(no prompt)';
+  const reasonEl = card.querySelector('.cand-reason');
+  reasonEl.textContent = c.reason || '';
+  reasonEl.hidden = !c.reason;
+
+  const cwdEl = card.querySelector('.cand-cwd');
+  cwdEl.textContent = c.action.cwd;
+  cwdEl.title = c.action.cwd;
+  card.querySelector('.cand-source').textContent =
+    c.source + (c.producer && c.producer !== 'user' ? ' · ' + c.producer : '');
+
+  const ref = card.querySelector('.cand-ref');
+  const href = c.ref && (c.ref.slackPermalink || c.ref.url || c.ref.href);
+  if (href) { ref.href = href; ref.hidden = false; }
+
+  const launchBtn = card.querySelector('.cand-launch');
+  const dismissBtn = card.querySelector('.cand-dismiss');
+  const undismissBtn = card.querySelector('.cand-undismiss');
+  const skillBtn = card.querySelector('.cand-skill-btn');
+  const upBtn = card.querySelector('.cand-prio-up');
+  const downBtn = card.querySelector('.cand-prio-down');
+  const clearBtn = card.querySelector('.cand-clear');
+
+  if (c.status === 'pending') {
+    if (ctx.atCap) {
+      launchBtn.disabled = true;
+      launchBtn.title = `At the concurrency cap (${ctx.liveCount}/${ctx.caps.maxConcurrent} running)`;
+    }
+    launchBtn.addEventListener('click', () =>
+      withFeedback(launchBtn, 'Launch failed', async () => {
+        await post(`/api/candidates/${c.id}/launch`);
+        toast('Launching — switch to Sessions to watch it appear', true);
+        await refreshCandidates();
+      }, '✓ Launched'));
+    dismissBtn.addEventListener('click', () =>
+      withFeedback(dismissBtn, 'Dismiss failed', async () => {
+        await post(`/api/candidates/${c.id}/dismiss`);
+        await refreshCandidates();
+      }));
+    skillBtn.addEventListener('click', () => editSkill(c));
+    upBtn.addEventListener('click', () => reprioritize(c, +1));
+    downBtn.addEventListener('click', () => reprioritize(c, -1));
+    promptEl.classList.add('cand-editable');
+    promptEl.addEventListener('click', () => editPrompt(c));
+  } else {
+    // history item — a dismissed one can be restored; either can be cleared now
+    // (otherwise it auto-prunes: launched soon, dismissed after a few days)
+    for (const b of [launchBtn, dismissBtn, skillBtn, upBtn, downBtn]) b.hidden = true;
+    clearBtn.hidden = false;
+    clearBtn.addEventListener('click', () =>
+      withFeedback(clearBtn, 'Clear failed', async () => {
+        await del(`/api/candidates/${c.id}`);
+        await refreshCandidates();
+      }));
+    if (c.status === 'dismissed') {
+      undismissBtn.hidden = false;
+      undismissBtn.addEventListener('click', () =>
+        withFeedback(undismissBtn, 'Restore failed', async () => {
+          await post(`/api/candidates/${c.id}/undismiss`);
+          await refreshCandidates();
+        }));
+    }
+  }
+  return card;
+}
+
+function renderCandidates(data) {
+  const list = data.candidates || [];
+  const caps = data.caps || {};
+  const liveCount = (data.sessions || []).length;
+  const atCap = caps.maxConcurrent != null && liveCount >= caps.maxConcurrent;
+  const pending = list.filter((c) => c.status === 'pending');
+
+  const badge = document.getElementById('cand-badge');
+  badge.textContent = pending.length;
+  badge.hidden = pending.length === 0;
+
+  const q = candFilter.trim().toLowerCase();
+  const filtered = list.filter((c) => candMatches(c, q));
+
+  const cgrid = document.getElementById('cand-grid');
+  cgrid.innerHTML = '';
+  for (const c of filtered) cgrid.appendChild(buildCandidate(c, { atCap, liveCount, caps }));
+
+  document.getElementById('cand-empty').hidden = list.length !== 0;
+  document.getElementById('cand-nomatch').hidden = !(list.length > 0 && filtered.length === 0);
+
+  document.getElementById('cand-count').textContent = list.length
+    ? `${pending.length} pending` +
+      (q ? ` · ${filtered.length} shown` : '') +
+      (atCap ? ` · ${liveCount}/${caps.maxConcurrent} running (at cap)` : '')
+    : '';
+}
+
+// ---- new-candidate dialog (mirrors the New Session form, but stages instead
+// of launching — it POSTs to /api/candidates)
+const ncDialog = document.getElementById('new-candidate-dialog');
+const ncCwd = document.getElementById('nc-cwd');
+const ncSkill = document.getElementById('nc-skill');
+const ncSkillDesc = document.getElementById('nc-skill-desc');
+const ncPrompt = document.getElementById('nc-prompt');
+let ncSkillDescriptions = {};
+
+async function ncLoadSkills() {
+  try {
+    const res = await fetch('/api/skills?cwd=' + encodeURIComponent(ncCwd.value.trim()));
+    const { skills } = await res.json();
+    ncSkillDescriptions = Object.fromEntries(skills.map((s) => [s.name, s.description]));
+    const current = ncSkill.value;
+    ncSkill.innerHTML =
+      '<option value="">(none — free-form prompt)</option>' +
+      skills.map((s) => `<option value="${s.name}">/${s.name}${s.scope === 'project' ? ' · project' : ''}</option>`).join('');
+    if (ncSkillDescriptions[current] !== undefined) ncSkill.value = current;
+    ncUpdateSkillUi();
+  } catch { /* dropdown still usable with just "(none)" */ }
+}
+
+function ncUpdateSkillUi() {
+  const skill = ncSkill.value;
+  ncSkillDesc.textContent = skill ? ncSkillDescriptions[skill] || '' : '';
+  document.getElementById('nc-prompt-label').textContent = skill ? `Arguments for /${skill}` : 'Prompt';
+  ncPrompt.placeholder = skill ? `arguments for /${skill}` : 'What should this session work on?';
+}
+
+ncSkill.addEventListener('change', ncUpdateSkillUi);
+ncCwd.addEventListener('change', ncLoadSkills);
+
+document.getElementById('new-candidate-btn').addEventListener('click', async () => {
+  try {
+    const res = await fetch('/api/projects');
+    const { projects } = await res.json();
+    document.getElementById('nc-projects').innerHTML = projects.map((p) => `<option value="${p}"></option>`).join('');
+  } catch { /* picker still usable without suggestions */ }
+  ncLoadSkills();
+  ncDialog.showModal();
+  ncCwd.focus();
+});
+
+document.getElementById('nc-cancel').addEventListener('click', () => ncDialog.close());
+
+document.getElementById('new-candidate-form').addEventListener('submit', (e) => {
+  e.preventDefault();
+  const btn = e.target.querySelector('button[type="submit"]');
+  withFeedback(btn, 'Add failed', async () => {
+    await post('/api/candidates', {
+      cwd: ncCwd.value.trim(),
+      skill: ncSkill.value,
+      prompt: ncPrompt.value.trim(),
+      reason: document.getElementById('nc-reason').value.trim(),
+      priority: Number(document.getElementById('nc-priority').value) || 0,
+      source: 'manual',
+    });
+    ncDialog.close();
+    ncPrompt.value = '';
+    ncSkill.value = '';
+    document.getElementById('nc-reason').value = '';
+    document.getElementById('nc-priority').value = '0';
+    ncUpdateSkillUi();
+    toast('Candidate added', true);
+  }, '✓ Added');
 });
 
 // ---------------------------------------------------------------- theme toggle

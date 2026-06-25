@@ -5,7 +5,9 @@
 
 A local web dashboard for every Claude Code session running on this machine: live status,
 the prompt each session started with, every action taken, flashing alerts when a session
-needs you, one-click Approve/Deny for permission prompts, and a launcher for new sessions.
+needs you, one-click Approve/Deny for permission prompts, a launcher for new sessions, and
+a **Candidates** tab — a launchable, prioritized list of proposed work you review before it
+runs.
 
 Zero dependencies. Nothing leaves localhost. See [DESIGN.md](DESIGN.md) for the full design.
 
@@ -89,6 +91,8 @@ click OK; Terminal.app raw keys additionally need Accessibility permission.
 | Expand a card | **⛶** in the card header — opens a large, resizable overlay (drag the corner) for a roomier feed/terminal mirror; **⛶** again, **Esc**, or a backdrop click returns it to its place |
 | Rename a session | **✎** next to the title — empty input reverts to the auto title |
 | Switch theme | **🌗/☀️/🌙** next to the title — auto (follows your system appearance, including scheduled day/night switching), light, or dark; an explicit choice is remembered across visits |
+| Queue work as a candidate | **Candidates** tab — pending sessions proposed by a running session (`POST /api/candidates`), the launch page's **Add to candidates**, or the **＋ New candidate** form; filter the list, reprioritize (▲/▼), edit the skill/prompt |
+| Launch / dismiss a candidate | **▷ Launch** spawns it (becomes a live session; gated by a concurrency cap); **✕ Dismiss** / **↩ Restore** drop or restore it |
 
 ## How it works
 

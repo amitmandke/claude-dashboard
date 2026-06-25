@@ -27,11 +27,12 @@ turns (cache: `~/.claude-dashboard/ai-titles.json`); precedence is ✎ custom ti
 
 - `server/src/` — `index.js` (entry), `config.js`, `routes/` (api, static),
   `services/` (sessionRegistry, transcript, customTitles, aiTitles, projects, skills,
+  `candidates/store.js` = the launchable candidate list,
   `terminals/` = dispatcher + procEnv + iterm + appleTerminal + tmux), `utils/fsio.js`
 - `web/public/` — `index.html`, `app.js`, `md.js` (minimal markdown renderer for the
   full-reply popup), `dialog.js` (parses the permission-dialog options out of the
-  mirrored screen so quick actions send the right digit), `style.css` (no framework,
-  no build step)
+  mirrored screen so quick actions send the right digit), `launch.html` (clickable
+  launch/add-to-candidates confirmation page), `style.css` (no framework, no build step)
 - `scripts/start.sh` — background-start + open browser; `install-launchd.sh` /
   `uninstall-launchd.sh` — run as a launchd user agent (login start, crash restart)
 - `DESIGN.md` — full design: mockups, status→visual mapping, API contract, trade-offs
