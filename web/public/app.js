@@ -221,16 +221,21 @@ function buildCard(s) {
     showReply(cur.title || cur.project, cur.lastAssistantText, cur.pid, lastReply && lastReply.at);
   });
 
-  // quick actions for permission prompts
+  // Quick actions for permission prompts. The digit each button sends is read from
+  // the live dialog (see applyDialogOptions) — never assumed: a two-option prompt
+  // makes "2" mean No, so hardcoding it would deny instead of "always allow".
   const sendKey = (k) => post(`/api/sessions/${s.pid}/key`, { key: k });
-  const qa = (sel, k, doneLabel) => {
+  const qa = (sel, getKey, doneLabel) => {
     const btn = card.querySelector(sel);
-    btn.addEventListener('click', () =>
-      withFeedback(btn, 'Action failed', () => sendKey(k), doneLabel));
+    btn.addEventListener('click', () => {
+      const k = getKey();
+      if (!k) return; // no matching option in this dialog (button is hidden anyway)
+      withFeedback(btn, 'Action failed', () => sendKey(k), doneLabel);
+    });
   };
-  qa('.qa-approve', '1', '✓ Approved');
-  qa('.qa-always', '2', '✓ Approved');
-  qa('.qa-deny', 'escape', '✓ Denied');
+  qa('.qa-approve', () => card.dataset.approveDigit || '1', '✓ Approved');
+  qa('.qa-always', () => card.dataset.alwaysDigit || '', '✓ Approved');
+  qa('.qa-deny', () => 'escape', '✓ Denied');
   const editBtn = card.querySelector('.qa-edit');
   editBtn.addEventListener('click', () =>
     withFeedback(editBtn, 'Action failed', async () => {
@@ -286,6 +291,30 @@ function spinnerLine(screen) {
     if (/^[^\x00-\x7F]\s*\S+…\s*\(/.test(l)) return l;
   }
   return '';
+}
+
+// Map the Approve/Always buttons to the digits this specific permission dialog
+// uses, parsed from the mirrored screen. Approve falls back to "1" (always the
+// top/safest option); Always is shown only when a real don't-ask-again option
+// exists — on a two-option prompt option 2 is "No", so we hide it rather than
+// deny by mistake.
+function applyDialogOptions(card, screen) {
+  const { approveDigit, alwaysDigit } = parseDialogOptions(screen);
+  card.dataset.approveDigit = approveDigit || '1';
+  const alwaysBtn = card.querySelector('.qa-always');
+  if (alwaysDigit) {
+    card.dataset.alwaysDigit = alwaysDigit;
+    alwaysBtn.hidden = false;
+  } else {
+    delete card.dataset.alwaysDigit;
+    alwaysBtn.hidden = true;
+  }
+}
+
+function resetDialogOptions(card) {
+  delete card.dataset.approveDigit;
+  delete card.dataset.alwaysDigit;
+  card.querySelector('.qa-always').hidden = true;
 }
 
 function updateCard(card, s, now) {
@@ -365,6 +394,7 @@ function updateCard(card, s, now) {
             mirror.textContent = screen;
             mirror.hidden = false;
             mirror.scrollTop = mirror.scrollHeight;
+            applyDialogOptions(card, screen);
           }
         })
         .catch(() => {});
@@ -372,6 +402,7 @@ function updateCard(card, s, now) {
   } else {
     mirror.hidden = true;
     delete card.dataset.screenAt;
+    resetDialogOptions(card);
   }
 
   // show approve/deny only when blocked on a permission-style prompt

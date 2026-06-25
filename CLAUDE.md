@@ -30,8 +30,9 @@ turns (cache: `~/.claude-dashboard/ai-titles.json`); precedence is ✎ custom ti
   `candidates/store.js` = the launchable candidate list,
   `terminals/` = dispatcher + procEnv + iterm + appleTerminal + tmux), `utils/fsio.js`
 - `web/public/` — `index.html`, `app.js`, `md.js` (minimal markdown renderer for the
-  full-reply popup), `launch.html` (clickable launch/add-to-candidates confirmation page),
-  `style.css` (no framework, no build step)
+  full-reply popup), `dialog.js` (parses the permission-dialog options out of the
+  mirrored screen so quick actions send the right digit), `launch.html` (clickable
+  launch/add-to-candidates confirmation page), `style.css` (no framework, no build step)
 - `scripts/start.sh` — background-start + open browser; `install-launchd.sh` /
   `uninstall-launchd.sh` — run as a launchd user agent (login start, crash restart)
 - `DESIGN.md` — full design: mockups, status→visual mapping, API contract, trade-offs
@@ -105,7 +106,12 @@ a function testable, export it (several are exported solely for tests, noted as 
   themes (it mirrors a real terminal pane).
 - `~/.claude/sessions/*.json` is an internal Claude Code format (versioned via its
   `version` field); a Claude Code upgrade may change it — fix `sessionRegistry.js` first.
-- Quick actions assume the standard permission dialog (1=Yes, 2=Yes always, Esc=No).
+- Quick actions read the digit to send from the **live dialog** (`dialog.js` parses
+  the mirrored screen) — never assume option numbers. Claude Code shows a two-option
+  menu (`1=Yes`, `2=No … (esc)`) for commands it can't build a reusable allow-rule for
+  (compound commands), so a hardcoded `2` for "Always" silently *denies* there. The
+  Always button is therefore hidden unless the prompt actually offers a don't-ask-again
+  option; Approve maps to the "Yes" digit, Deny always sends Esc.
 - **Backend test coverage is uneven**: iTerm2 is exercised continuously; Terminal.app
   and tmux backends are implemented to their documented APIs but had no live test
   environment at the time of writing — verify against a real session before relying

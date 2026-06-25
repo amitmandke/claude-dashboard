@@ -129,7 +129,7 @@
       <pre class="screen-mirror" hidden></pre>
       <div class="quick-actions" hidden>
         <button class="qa-btn qa-approve" title="Selects option 1 (Yes)">✓ Approve</button>
-        <button class="qa-btn qa-always" title="Selects option 2 (Yes, don't ask again)">✓✓ Always</button>
+        <button class="qa-btn qa-always" title="Selects the don't-ask-again option (hidden when the prompt has no such option)" hidden>✓✓ Always</button>
         <button class="qa-btn qa-deny" title="Sends Esc (No)">✗ Deny</button>
         <button class="qa-btn qa-edit" title="Sends Esc, then type your guidance below">✎ Deny &amp; redirect</button>
       </div>
@@ -234,6 +234,7 @@
   </dialog>
 
   <script src="md.js"></script>
+  <script src="dialog.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

@@ -158,9 +158,18 @@ count is above zero:
 ```
 [✓ Approve]  [✓✓ Always]  [✗ Deny]  [✎ Deny & redirect]
      │            │           │              │
-   sends 1      sends 2    sends Esc    sends Esc, focuses the composer
-                                        so you type what to do instead
+  sends the   sends the     sends Esc    sends Esc, focuses the composer
+  "Yes" digit "don't-ask"                 so you type what to do instead
+  (usually 1) digit
 ```
+
+The digit each button sends is **parsed from the live dialog** (mirrored on screen),
+not assumed — see `web/public/dialog.js`. Claude Code drops the "don't ask again" line
+for commands it can't form a reusable allow-rule for (e.g. a compound `cd X && git …`),
+leaving a **two-option** menu where option 2 is *"No … (esc)"*. Blindly sending `2`
+there would deny the tool, so **Always is shown only when the prompt actually offers a
+don't-ask-again option**; on a two-option dialog it is hidden. Approve maps to the "Yes"
+digit (option 1), Deny always sends Esc.
 
 ### Candidates view (second tab)
 
