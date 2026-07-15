@@ -11,6 +11,7 @@ const http = require('http');
 const config = require('./config');
 const api = require('./routes/api');
 const staticFiles = require('./routes/static');
+const watchers = require('./services/watchers');
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${config.HOST}:${config.PORT}`);
@@ -30,4 +31,10 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(config.PORT, config.HOST, () => {
   console.log(`Claude Dashboard → http://localhost:${config.PORT}`);
+  // Slack watchers (candidate producer) — no-op unless ~/.claude-dashboard/watchers.json exists.
+  try {
+    watchers.start();
+  } catch (e) {
+    console.error(`[${new Date().toISOString()}] ERROR watcher start: ${e.message}`);
+  }
 });

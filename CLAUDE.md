@@ -28,7 +28,10 @@ turns (cache: `~/.claude-dashboard/ai-titles.json`); precedence is ✎ custom ti
 - `server/src/` — `index.js` (entry), `config.js`, `routes/` (api, static),
   `services/` (sessionRegistry, transcript, customTitles, aiTitles, projects, skills,
   `candidates/store.js` = the launchable candidate list,
+  `watchers/` = Slack watcher candidate producer (index=poll loop, config, state,
+  slack, repos, match, classify),
   `terminals/` = dispatcher + procEnv + iterm + appleTerminal + tmux), `utils/fsio.js`
+- `watchers.example.json` — template for `~/.claude-dashboard/watchers.json` (placeholders only)
 - `web/public/` — `index.html`, `app.js`, `md.js` (minimal markdown renderer for the
   full-reply popup), `dialog.js` (parses the permission-dialog options out of the
   mirrored screen so quick actions send the right digit), `launch.html` (clickable
@@ -143,3 +146,26 @@ a function testable, export it (several are exported solely for tests, noted as 
   token counts per `message.id`, never per line — a per-line sum overcounts 3-5×.
 - Interaction features are iTerm2-only; observation works with any terminal.
 - First osascript call triggers a one-time macOS "control iTerm2" permission dialog.
+- **Slack watchers poll, never Socket Mode** — a persistent cursor (`watchers-state.json`)
+  backfills messages missed while the machine was asleep; a real-time socket would drop them.
+  Slack's `conversations.history` omits thread replies, so late `@you` mentions are caught by
+  re-scanning tracked threads' replies (bounded by retention + a thread cap). Don't "upgrade"
+  to events without keeping the cursor backfill.
+- **The watcher classifier only matches an intent** — its sole output is a configured intent
+  name (→ skill from the `intents` map). Repo, launch prompt, and reason are derived
+  deterministically in `runWatcherOnce`; don't push those decisions back into the LLM. Keep
+  scopes read-only (no `chat:write`) — the watcher must never be able to post.
+- **Watcher token via env only** — `watchers.json` stores `"$SLACK_BOT_TOKEN"`, resolved from
+  the environment; never write a real `xoxb-` token into config or the repo. The launchd agent
+  doesn't inherit an interactive shell, so the token must be in the plist's
+  `EnvironmentVariables` (or a sourced file) for the live dashboard to see it.
+- `slack.js` is coverage-excluded (pure network, like the terminal backends); the rest of the
+  watcher pipeline is unit-tested against a stub client — keep it that way (inject the client).
+- **Watchers run as a per-watcher `Map` of entries** (running/paused/error/disabled), not a
+  global timer list — so one watcher can be paused/run without touching the others. Pause/Resume
+  and Stop-all/Start-all **persist** to `watchers.json` via `config.setEnabled` (flips `enabled`,
+  preserving other fields) so a pause survives a restart. Tests inject `buildDeps`/`scheduleInterval`
+  via `_setTestHooks` to exercise the control surface without network or real timers — keep that seam.
+- **A watcher's first run baselines** (records the cursor, stages nothing) so it never dumps a
+  channel's backlog as candidates. Don't "fix" this into staging on first run — only a *saved*
+  cursor should drive backfill. If you reset `watchers-state.json`, the next run re-baselines.

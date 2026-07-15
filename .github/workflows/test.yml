@@ -19,7 +19,8 @@ jobs:
       # zero dependencies — Node's built-in test runner + coverage only.
       # Coverage is gated on the pure-logic modules; integration-only files
       # (HTTP routing, AppleScript/tmux backends, registry/projects/skills,
-      # the DOM frontend) are excluded since they need a browser/real apps.
+      # the DOM frontend, the Slack network client) are excluded since they
+      # need a browser/network/real apps.
       - name: Run tests with coverage gate
         run: |
           set -o pipefail
@@ -30,6 +31,7 @@ jobs:
             --test-coverage-exclude='server/src/services/projects.js' \
             --test-coverage-exclude='server/src/services/skills.js' \
             --test-coverage-exclude='server/src/services/terminals/**' \
+            --test-coverage-exclude='server/src/services/watchers/slack.js' \
             --test-coverage-lines=80 \
             --test-coverage-branches=68 \
             --test-coverage-functions=78 \
@@ -63,6 +65,7 @@ jobs:
             --test-coverage-exclude='server/src/services/projects.js' \
             --test-coverage-exclude='server/src/services/skills.js' \
             --test-coverage-exclude='server/src/services/terminals/**' \
+            --test-coverage-exclude='server/src/services/watchers/slack.js' \
             | tee coverage.txt
           pct=$(grep 'all files' coverage.txt | awk -F'|' '{gsub(/ /,"",$2); print int($2)}')
           if [ "$pct" -ge 80 ]; then color=brightgreen

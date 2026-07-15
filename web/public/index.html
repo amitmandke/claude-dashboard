@@ -27,6 +27,9 @@
       <button class="tab" data-view="candidates">Candidates
         <span id="cand-badge" class="tab-badge" hidden>0</span>
       </button>
+      <button class="tab" data-view="watchers">Watchers
+        <span id="watch-badge" class="tab-badge" hidden>0</span>
+      </button>
     </nav>
   </header>
 
@@ -93,6 +96,21 @@
     </div>
     <div id="cand-nomatch" class="empty" hidden>No candidates match your filter.</div>
   </div><!-- /#candidates-view -->
+
+  <!-- ===== Watchers view ===== -->
+  <div id="watchers-view" hidden>
+    <div class="watch-toolbar">
+      <span id="watch-summary" class="cand-count"></span>
+      <button id="watch-stopall" class="ghost-btn" title="Pause every watcher (persists)">⏸ Stop all</button>
+      <button id="watch-startall" class="primary-btn" title="Resume every watcher (persists)">▷ Start all</button>
+    </div>
+    <main id="watch-grid"></main>
+    <div id="watch-empty" class="empty" hidden>
+      No watchers configured.<br>
+      <span>Add one in <code>~/.claude-dashboard/watchers.json</code> (see
+      <code>watchers.example.json</code>) — a watcher turns Slack mentions/DMs into candidates.</span>
+    </div>
+  </div><!-- /#watchers-view -->
 
   <template id="card-template">
     <section class="card">
@@ -167,6 +185,28 @@
         <button class="cand-dismiss ghost-btn" title="Dismiss this candidate">✕ Dismiss</button>
         <button class="cand-undismiss ghost-btn" title="Restore to the pending list" hidden>↩ Restore</button>
         <button class="cand-clear ghost-btn" title="Remove from the list now" hidden>✕ Clear</button>
+      </div>
+    </section>
+  </template>
+
+  <template id="watcher-template">
+    <section class="watch-card">
+      <div class="watch-head">
+        <span class="watch-name"></span>
+        <span class="watch-trigger"></span>
+        <span class="watch-state"></span>
+      </div>
+      <div class="watch-meta">
+        <span class="watch-channels"></span>
+        <span class="watch-every"></span>
+        <span class="watch-lastpoll"></span>
+        <span class="watch-staged"></span>
+      </div>
+      <p class="watch-error" hidden></p>
+      <div class="watch-actions">
+        <button class="watch-pause ghost-btn" title="Pause this watcher (persists)">⏸ Pause</button>
+        <button class="watch-resume ghost-btn" title="Resume this watcher (persists)" hidden>▷ Resume</button>
+        <button class="watch-run ghost-btn" title="Poll once right now">↻ Run now</button>
       </div>
     </section>
   </template>

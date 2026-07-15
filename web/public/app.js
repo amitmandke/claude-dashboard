@@ -489,6 +489,7 @@ function render(data) {
   sessBadge.hidden = sessions.length === 0;
 
   renderCandidates(data);
+  renderWatchers(data);
 
   // live combined usage across the active sessions (recomputed every tick)
   const ctx = sessions.reduce((a, s) => a + (s.contextTokens || 0), 0);
@@ -587,14 +588,14 @@ document.getElementById('new-session-form').addEventListener('submit', (e) => {
 
 // in-page view toggle: live Sessions vs the launchable Candidates list. One
 // page, one SSE stream — this just switches which view is visible.
+const VIEWS = ['sessions', 'candidates', 'watchers'];
 let activeView = 'sessions';
 function setView(view) {
-  activeView = view === 'candidates' ? 'candidates' : 'sessions';
+  activeView = VIEWS.includes(view) ? view : 'sessions';
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.dataset.view === activeView));
-  document.getElementById('sessions-view').hidden = activeView !== 'sessions';
-  document.getElementById('candidates-view').hidden = activeView !== 'candidates';
+  for (const v of VIEWS) document.getElementById(v + '-view').hidden = activeView !== v;
   // keep the URL hash in sync so a refresh / bookmark lands on the same tab
-  const want = activeView === 'candidates' ? '#candidates' : '';
+  const want = activeView === 'sessions' ? '' : '#' + activeView;
   if (location.hash !== want) history.replaceState(null, '', want || location.pathname);
 }
 document.getElementById('tabs').addEventListener('click', (e) => {
@@ -829,6 +830,96 @@ document.getElementById('new-candidate-form').addEventListener('submit', (e) => 
     ncUpdateSkillUi();
     toast('Candidate added', true);
   }, '✓ Added');
+});
+
+// ----------------------------------------------------------------- watchers
+
+const watchTemplate = document.getElementById('watcher-template');
+
+// Re-pull watcher status and re-render now, so a Pause/Resume/Run reflects
+// immediately instead of waiting for the next SSE tick.
+async function refreshWatchers() {
+  try {
+    const status = await (await fetch('/api/watchers')).json();
+    if (lastData) {
+      lastData.watchers = status;
+      renderWatchers(lastData);
+    }
+  } catch { /* the next SSE snapshot will reconcile */ }
+}
+
+function watchAction(name, verb) {
+  return async () => {
+    try {
+      const res = await fetch(`/api/watchers/${encodeURIComponent(name)}/${verb}`, { method: 'POST' });
+      const r = await res.json();
+      if (!res.ok) throw new Error(r.error || 'failed');
+      toast(`Watcher ${name}: ${verb} ✓`, true);
+      await refreshWatchers();
+    } catch (err) { toast(`${verb} failed: ${err.message}`); }
+  };
+}
+
+function buildWatcher(w) {
+  const card = watchTemplate.content.cloneNode(true).querySelector('.watch-card');
+  card.dataset.state = w.state;
+  card.querySelector('.watch-name').textContent = w.name;
+  card.querySelector('.watch-trigger').textContent = w.trigger ? `#${w.trigger}` : '';
+
+  const stateEl = card.querySelector('.watch-state');
+  stateEl.textContent = w.state;
+  stateEl.className = 'watch-state watch-state-' + w.state;
+
+  card.querySelector('.watch-channels').textContent =
+    (w.channels && w.channels.length) ? `channels: ${w.channels.join(', ')}` : 'DM';
+  card.querySelector('.watch-every').textContent = w.everySeconds ? `every ${w.everySeconds}s` : '';
+  card.querySelector('.watch-lastpoll').textContent =
+    w.lastPollAt ? `last poll ${fmtTime(w.lastPollAt)}` : 'not polled yet';
+  card.querySelector('.watch-staged').textContent = `${w.staged || 0} staged`;
+
+  const errEl = card.querySelector('.watch-error');
+  errEl.hidden = !w.lastError;
+  if (w.lastError) errEl.textContent = '⚠ ' + w.lastError;
+
+  const pauseBtn = card.querySelector('.watch-pause');
+  const resumeBtn = card.querySelector('.watch-resume');
+  const runBtn = card.querySelector('.watch-run');
+  const paused = w.state === 'paused' || w.state === 'disabled';
+  pauseBtn.hidden = paused;
+  resumeBtn.hidden = !paused;
+  pauseBtn.addEventListener('click', watchAction(w.name, 'pause'));
+  resumeBtn.addEventListener('click', watchAction(w.name, 'resume'));
+  runBtn.addEventListener('click', watchAction(w.name, 'run'));
+  return card;
+}
+
+function renderWatchers(data) {
+  const status = data.watchers || { watchers: [] };
+  const list = status.watchers || [];
+  const grid = document.getElementById('watch-grid');
+  grid.textContent = '';
+  for (const w of list) grid.appendChild(buildWatcher(w));
+
+  document.getElementById('watch-empty').hidden = list.length > 0;
+  const running = list.filter((w) => w.state === 'running').length;
+  document.getElementById('watch-summary').textContent =
+    list.length ? `${running} running · ${list.length} watcher${list.length === 1 ? '' : 's'}` : '';
+
+  const badge = document.getElementById('watch-badge');
+  badge.textContent = running;
+  badge.hidden = running === 0;
+}
+
+document.getElementById('watch-stopall').addEventListener('click', async () => {
+  try { await fetch('/api/watchers/stop-all', { method: 'POST' }); toast('All watchers paused', true); await refreshWatchers(); }
+  catch (err) { toast('Stop-all failed: ' + err.message); }
+});
+document.getElementById('watch-startall').addEventListener('click', async () => {
+  try {
+    const r = await (await fetch('/api/watchers/start-all', { method: 'POST' })).json();
+    if (r && r.ok === false) throw new Error(r.error || 'failed');
+    toast('All watchers started', true); await refreshWatchers();
+  } catch (err) { toast('Start-all failed: ' + err.message); }
 });
 
 // ---------------------------------------------------------------- theme toggle

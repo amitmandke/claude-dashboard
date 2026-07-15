@@ -941,3 +941,57 @@ dialog input:focus, dialog textarea:focus { border-color: var(--accent); }
 .cand-prio { padding: 5px 9px; }
 .cand-dismiss:hover, .cand-clear:hover { color: var(--red-text); border-color: var(--red-edge); }
 button.primary-btn:disabled, button.ghost-btn:disabled { opacity: .45; cursor: default; }
+
+/* ----- Watchers tab (reuses the candidate card patterns) ----- */
+.watch-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 24px 0;
+}
+#watch-stopall { margin-left: auto; } /* pushes both buttons to the right, summary stays left */
+
+.watch-card {
+  background: var(--card);
+  border: 1px solid var(--card-edge);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.watch-head { display: flex; align-items: center; gap: 10px; }
+.watch-name { font-weight: 650; font-size: 14px; color: var(--text); }
+.watch-trigger {
+  font-size: 11px;
+  color: var(--dim);
+  background: var(--inset);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.watch-state {
+  margin-left: auto;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  border-radius: 5px;
+  padding: 1px 7px;
+  color: var(--done-text);
+  background: var(--done-badge-bg);
+}
+.watch-state-running { color: var(--busy-text); background: var(--busy-badge-bg); }
+.watch-state-paused { color: var(--dim); background: var(--inset); }
+.watch-state-error { color: var(--red-text); background: var(--red-badge-bg); }
+
+.watch-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  font-size: 11px;
+  color: var(--feed-time);
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.watch-error { margin: 0; color: var(--red-text); font-size: 12px; }
+.watch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
+.watch-actions .ghost-btn { padding: 5px 11px; font-size: 12px; }

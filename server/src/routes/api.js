@@ -11,6 +11,7 @@ const customTitles = require('../services/customTitles');
 const aiTitles = require('../services/aiTitles');
 const transcript = require('../services/transcript');
 const candidates = require('../services/candidates/store');
+const watchers = require('../services/watchers');
 
 function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -135,6 +136,7 @@ async function snapshotJson() {
   return JSON.stringify({
     sessions,
     candidates: candidates.list(),
+    watchers: watchers.getStatus(),
     caps: { maxConcurrent: config.CANDIDATES_MAX_CONCURRENT, maxPending: config.CANDIDATES_MAX_PENDING },
     now: Date.now(),
   });
@@ -199,6 +201,36 @@ async function handle(req, res, url) {
       json(res, e.status || 500, { error: e.message });
     }
     return true;
+  }
+
+  // ---- Slack watchers: read-only status (last poll, staged counts, errors).
+  // Watchers are configured in ~/.claude-dashboard/watchers.json and run in the
+  // server process; a management UI is a deferred follow-up (see docs/proposals.md).
+  if (url.pathname === '/api/watchers' && req.method === 'GET') {
+    json(res, 200, watchers.getStatus());
+    return true;
+  }
+
+  // per-watcher controls: pause/resume (persist to watchers.json) and run-now
+  const wMatch = url.pathname.match(/^\/api\/watchers\/([^/]+)\/(pause|resume|run)$/);
+  if (wMatch && req.method === 'POST') {
+    const name = decodeURIComponent(wMatch[1]);
+    const verb = wMatch[2];
+    let r;
+    try {
+      r = verb === 'pause' ? watchers.pause(name)
+        : verb === 'resume' ? watchers.resume(name)
+        : await watchers.runNow(name);
+    } catch (e) {
+      return json(res, 500, { error: e.message }), true;
+    }
+    if (!r || r.ok === false) return json(res, 400, { error: (r && r.error) || 'failed' }), true;
+    json(res, 200, r);
+    return true;
+  }
+  if ((url.pathname === '/api/watchers/stop-all' || url.pathname === '/api/watchers/start-all') && req.method === 'POST') {
+    const r = url.pathname.endsWith('stop-all') ? watchers.stopAll() : watchers.startAll();
+    return json(res, r && r.ok === false ? 400 : 200, r || { ok: true }), true;
   }
 
   // ---- candidate sessions: a launchable, prioritized pending list a producer
