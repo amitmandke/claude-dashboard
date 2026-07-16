@@ -293,9 +293,13 @@ async function handle(req, res, url) {
         const c = candidates.find(id);
         if (!c) return json(res, 404, { error: 'candidate not found' }), true;
         if (c.status === 'launched') return json(res, 409, { error: 'candidate already launched' }), true;
-        const live = registry.collectSessions().length;
-        if (live >= config.CANDIDATES_MAX_CONCURRENT) {
-          return json(res, 409, { error: `at the concurrency cap (${live}/${config.CANDIDATES_MAX_CONCURRENT} running)` }), true;
+        // Gate on load, not window count: only sessions with a turn in flight
+        // (busy, or waiting on a prompt) count — idle/turn-complete windows don't.
+        const active = registry
+          .collectSessions()
+          .filter((s) => s.status === 'busy' || s.derivedStatus === 'waiting').length;
+        if (active >= config.CANDIDATES_MAX_CONCURRENT) {
+          return json(res, 409, { error: `at the concurrency cap (${active}/${config.CANDIDATES_MAX_CONCURRENT} actively working)` }), true;
         }
         const cwd = validateCwd(c.action.cwd);
         const skill = validateSkill(c.action.skill);

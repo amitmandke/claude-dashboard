@@ -696,7 +696,7 @@ function buildCandidate(c, ctx) {
   if (c.status === 'pending') {
     if (ctx.atCap) {
       launchBtn.disabled = true;
-      launchBtn.title = `At the concurrency cap (${ctx.liveCount}/${ctx.caps.maxConcurrent} running)`;
+      launchBtn.title = `At the concurrency cap (${ctx.liveCount}/${ctx.caps.maxConcurrent} actively working)`;
     }
     launchBtn.addEventListener('click', () =>
       withFeedback(launchBtn, 'Launch failed', async () => {
@@ -739,7 +739,9 @@ function buildCandidate(c, ctx) {
 function renderCandidates(data) {
   const list = data.candidates || [];
   const caps = data.caps || {};
-  const liveCount = (data.sessions || []).length;
+  // match the server rule: count only actively-working sessions (busy/waiting),
+  // not idle/turn-complete windows.
+  const liveCount = (data.sessions || []).filter((s) => s.status === 'busy' || s.derivedStatus === 'waiting').length;
   const atCap = caps.maxConcurrent != null && liveCount >= caps.maxConcurrent;
   const pending = list.filter((c) => c.status === 'pending');
 

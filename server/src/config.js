@@ -42,7 +42,9 @@ module.exports = {
   // running session, a watcher, or the user) adds to; persisted in
   // ~/.claude-dashboard/candidates.json. Caps keep the list and concurrency sane.
   CANDIDATES_MAX_PENDING: parseInt(process.env.CLAUDE_DASH_MAX_PENDING || '100', 10),
-  CANDIDATES_MAX_CONCURRENT: parseInt(process.env.CLAUDE_DASH_MAX_CONCURRENT || '6', 10),
+  // caps *actively-working* launched sessions (busy/waiting), not idle windows —
+  // so it's a load backstop, not a window limit; default high.
+  CANDIDATES_MAX_CONCURRENT: parseInt(process.env.CLAUDE_DASH_MAX_CONCURRENT || '20', 10),
   // dismissed items linger as history for a while; launched ones clear sooner
   // since they've already become a live session (you can also ✕ Clear either now).
   CANDIDATES_RETENTION_DAYS: parseInt(process.env.CLAUDE_DASH_RETENTION_DAYS || '7', 10),
