@@ -91,8 +91,31 @@ click OK; Terminal.app raw keys additionally need Accessibility permission.
 | Expand a card | **⛶** in the card header — opens a large, resizable overlay (drag the corner) for a roomier feed/terminal mirror; **⛶** again, **Esc**, or a backdrop click returns it to its place |
 | Rename a session | **✎** next to the title — empty input reverts to the auto title |
 | Switch theme | **🌗/☀️/🌙** next to the title — auto (follows your system appearance, including scheduled day/night switching), light, or dark; an explicit choice is remembered across visits |
-| Queue work as a candidate | **Candidates** tab — pending sessions proposed by a running session (`POST /api/candidates`), the launch page's **Add to candidates**, or the **＋ New candidate** form; filter the list, reprioritize (▲/▼), edit the skill/prompt |
+| Queue work as a candidate | **Candidates** tab — pending sessions proposed by a running session (`POST /api/candidates`), the launch page's **Add to candidates**, the **＋ New candidate** form, or a **Slack watcher** (below); filter the list, reprioritize (▲/▼), edit the skill/prompt |
 | Launch / dismiss a candidate | **▷ Launch** spawns it (becomes a live session; gated by a concurrency cap); **✕ Dismiss** / **↩ Restore** drop or restore it |
+
+### Slack watchers (optional)
+
+A watcher turns Slack threads that **@-mention you** into candidate sessions — nothing runs
+or gets posted without your click. It's **off** until you create `~/.claude-dashboard/watchers.json`
+(copy `watchers.example.json`). Two trigger types:
+
+- **`mention`** — watch a channel the bot is invited to; a thread qualifies when it @-mentions
+  one of your configured users (anywhere, including a late reply).
+- **`dm`** — **forward or DM a message to the bot** and it becomes a candidate: no channel, no
+  @mention, nothing to wait for. Needs the app's Messages tab enabled and `im:history`/`im:read`
+  scopes.
+
+Either way you give it an **intent → skill map**: a small headless `claude` call matches each
+qualifying thread to one of *your* named intents, and the mapped skill is what the candidate
+launches (the model only picks the intent — the repo, prompt, and reason are derived
+deterministically).
+
+It **polls** (no Slack real-time setup) with a saved cursor, so mentions posted while your
+machine was asleep are picked up on the next poll, and a late `@you` deep in a thread is still
+caught. Needs a read-only Slack **bot token** (`chat:write` is deliberately *not* requested)
+in the `SLACK_BOT_TOKEN` environment variable. See `watchers.example.json` for the full,
+commented format; `GET /api/watchers` shows status.
 
 ## How it works
 

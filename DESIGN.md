@@ -49,8 +49,8 @@ creating the window — creating a window mid-launch fails with opaque AppleEven
 
 | App | Folder | Tech | Role |
 |---|---|---|---|
-| dashboard-server | `server/` | Node.js ≥18, no deps | Scans registry + transcripts, pushes live state over SSE, drives iTerm2 (send input, focus panes, launch new sessions) |
-| dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Two in-page tabs (Sessions / Candidates): summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog; the Candidates tab lists launchable pending work with a text filter |
+| dashboard-server | `server/` | Node.js ≥18, no deps | Scans registry + transcripts, pushes live state over SSE, drives iTerm2 (send input, focus panes, launch new sessions), and runs the Slack watcher poll loop (candidate producer, see §5) |
+| dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Three in-page tabs (Sessions / Candidates / Watchers): summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog; the Candidates tab lists launchable pending work with a text filter; the Watchers tab shows each watcher's live state with Pause/Resume/Run-now and global Stop-all/Start-all |
 
 A single `node server/src/index.js` runs everything; the web app is static files served
 by the same process. `scripts/install-launchd.sh` installs it as a macOS launchd user
@@ -178,8 +178,8 @@ A **candidate session** is a session you *could* launch but haven't yet — a co
 It decouples *"something proposes work"* from *"a session actually runs"*: nothing spawns
 until you choose it. Candidates have several **producers** — a running Claude session that
 discovers follow-up work and calls `POST /api/candidates`, the **Add to candidates** button
-on the launch page, and the **New candidate** form in the UI (watchers are a later
-producer; see §7). All converge on one list.
+on the launch page, the **New candidate** form in the UI, and a **Slack watcher** that
+stages threads which @-mention you (see §5, *Slack watchers*). All converge on one list.
 
 The dashboard is still **one page and one SSE stream**: a header **tab toggle** flips
 between the Sessions view (everything above) and the Candidates view. The Candidates tab
@@ -258,6 +258,14 @@ server/src/
 │   ├── skills.js             skill/command discovery (~/.claude + <cwd>/.claude)
 │   ├── candidates/
 │   │   └── store.js          launchable candidate list (~/.claude-dashboard/candidates.json)
+│   ├── watchers/             Slack watcher — candidate producer (see "Slack watchers" below)
+│   │   ├── index.js          per-watcher runtime (Map): poll loop, pipeline (runWatcherOnce), pause/resume/run-now
+│   │   ├── config.js         load/validate watchers.json (fail-closed); trigger + intent map
+│   │   ├── state.js          persistent cursor + tracked threads + seen dedupe (watchers-state.json)
+│   │   ├── slack.js          zero-dep Slack Web API client (read-only; injectable transport)
+│   │   ├── repos.js          owner/repo → local checkout, auto-discovered from git remotes
+│   │   ├── match.js          mention detection, noise filter, PR-ref extraction, thread render
+│   │   └── classify.js       headless `claude -p` intent matcher (reuses the aiTitles machinery)
 │   └── terminals/
 │       ├── index.js          backend dispatcher: env detection → route, spawn picker
 │       ├── procEnv.js        pid → {TERM_PROGRAM, TMUX, ITERM_SESSION_ID, tty} via ps -E
@@ -290,6 +298,9 @@ server/src/
 | `/api/candidates/:id/launch` | POST | spawn it (same path as `/sessions/new`), mark `launched`; 409 at the `maxConcurrent` cap |
 | `/api/candidates/:id/dismiss` · `/undismiss` | POST | mark `dismissed` / restore to `pending` |
 | `/api/candidates/:id` | DELETE | remove the item from the list now (the ✕ Clear action) |
+| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error |
+| `/api/watchers/:name/{pause,resume,run}` | POST | pause a watcher (persists `enabled:false`), resume it (persists `enabled:true`), or run one poll now |
+| `/api/watchers/{stop-all,start-all}` | POST | pause / resume every watcher at once |
 
 The SSE snapshot is `{sessions, candidates, caps:{maxConcurrent, maxPending}, now}` — the
 candidate list rides the same 1.5 s diff-and-push loop, so any add/edit/launch/dismiss/clear
@@ -325,6 +336,75 @@ page offers two buttons: **Launch now** (spawns immediately) and **Add to candid
 (stages it on the Candidates tab for later review), so the emitting session lets you pick
 immediate vs. queued-for-review.
 
+### Slack watchers (candidate producer)
+
+A **watcher** watches a Slack channel and turns threads that **@-mention you** into
+candidate sessions. It never launches or posts anything — it only *produces* candidates you
+review. It runs inside the dashboard server process (started at boot), so it works whenever
+the machine is up, independent of whether a browser tab is open.
+
+**Configuration** lives in `~/.claude-dashboard/watchers.json` (local, git-ignored; the repo
+ships `watchers.example.json` with placeholders only). Validation is **fail-closed**: a
+watcher with no channels or no trigger users does not run — there is no "watch everything".
+Each watcher declares:
+
+- `channels` — Slack channel IDs the bot has been invited to.
+- `trigger` — what makes a thread worth looking at. Two types (the shape leaves room for
+  `keyword`/`reaction` later):
+  - `{ type: "mention", users:[…] }` — a channel thread qualifies when one of those users is
+    @-mentioned **anywhere in it, including a late reply**.
+  - `{ type: "dm", users:[…] }` — you **forward or DM a message to the bot** and it becomes a
+    candidate; every message from an allowlisted user in the bot's DM qualifies (no mention
+    needed — sending it *is* the intent). Needs `im:history`+`im:read` scopes and the app's
+    Messages tab enabled; the DM channel is resolved at runtime (`conversations.list types=im`),
+    so no `channels` field. Forwarded content (which Slack tucks into `attachments`/`blocks`,
+    not `text`) is folded in by `match.fullText`.
+- `intents` — an **intent → skill map**: `[{ name, description, skill }]`. This is the point
+  of control: the classifier's only job is to match a thread to one named intent (or none),
+  and the **skill is taken from this map, not chosen by the model**. With an empty list the
+  classifier falls back to picking a skill freely (looser, less controlled).
+- `poll.everySeconds` (floored at 30) and `action.preferCheckout`.
+
+**Polling with a persistent cursor** (`state.js` → `watchers-state.json`) is the reliability
+backbone. Each poll asks Slack's `conversations.history` for messages `oldest` = the saved
+cursor, so **anything posted while the machine was asleep is backfilled** on the next poll
+(Socket Mode was rejected precisely because it drops events during downtime). Slack's history
+endpoint doesn't return thread replies, so a `@you` that lands deep in an existing thread is
+caught by re-scanning tracked threads' `conversations.replies` each tick — bounded by a
+retention window and a thread cap (both configurable); the bound is logged, never silent.
+
+**Pipeline per qualifying thread** (`index.js` → `runWatcherOnce`): fetch the whole thread →
+match it to an intent via `classify.js` (headless `claude -p --model haiku`, reusing the
+`aiTitles.js` machinery: subscription-billed, no API key, run hidden in `~/.claude-dashboard/headless`
+with `CLAUDE_DASH_INTERNAL=1`, one-at-a-time with a failure fallback) → if an intent matches,
+**stage a candidate**. The skill comes from the intent map; the **repo (`cwd`), launch
+prompt, and reason are derived deterministically** (repo from PR links via `repos.js`
+auto-discovered from git remotes, falling back to the watcher's optional `action.cwd`; prompt
+= a link back + PR refs + the thread text) — the LLM does not author them. If the classifier is unavailable the thread is still staged as
+*unclassified* (never dropped) for you to fill in. Dedupe is keyed by `channel:thread_ts`, so
+socket/poll overlap or a re-scan never double-stages, and a decided thread (matched or not) is
+marked `seen` so it isn't re-classified.
+
+The token is resolved from a reference in config (`slack.botToken`), never stored inline in the
+repo. Three schemes, resolved by `config.resolveToken`: `keychain:<service>[:<account>]` (macOS
+Keychain via the `security` CLI — encrypted, and never placed in `process.env` so it isn't
+inherited by the headless `claude -p` children), `@/abs/path` (a `chmod 600` file), or
+`$ENV_VAR`. Scopes are read-only (no `chat:write`), so a watcher structurally cannot post.
+
+**Runtime & controls.** Each configured watcher is one entry in a `Map` (state ∈
+`running`/`paused`/`error`/`disabled`), so one can be controlled without touching the others or
+the dashboard. The **Watchers tab** shows each watcher's state, last poll, staged count, and last
+error, with **Pause / Resume / Run-now** per watcher and **Stop-all / Start-all** globally.
+Pause/Resume **persist** to `watchers.json` (`config.setEnabled` flips `enabled`, preserving all
+other fields) so they survive a restart; a paused watcher comes back paused. Status rides the SSE
+snapshot (`watchers` key) so the tab is live. A pristine **first run baselines** (records the
+cursor, stages nothing) so an existing channel's backlog isn't dumped as candidates; only a
+saved cursor drives backfill on later runs.
+
+The Slack client (`slack.js`) is coverage-excluded like the terminal backends (pure network),
+while the pipeline + control logic (`runWatcherOnce`, pause/resume, config/state/match/classify/repos)
+is unit-tested against a stub client and an injected timer.
+
 ## 6. Design decisions & trade-offs
 
 - **Read Claude's own state files instead of heuristics** — status is exact, including *why* a session is waiting. Trade-off: file format is undocumented/internal, could change between Claude Code versions (it's versioned in the file, easy to adapt).
@@ -338,18 +418,21 @@ immediate vs. queued-for-review.
 - **Dark and light themes via CSS variables only** — every color in `style.css` lives in a variable on `:root` (dark, the default) with a complete counterpart under `[data-theme="light"]`; no rule hardcodes a color. The header toggle cycles three modes — 🌗 auto (follows `prefers-color-scheme` live, so scheduled OS day/night switching works), ☀️ light, 🌙 dark — flipping `data-theme` on `<html>`. Auto is the default (nothing stored); an explicit choice persists in `localStorage`, and an inline `<head>` script applies the resolved theme before the stylesheet loads (no flash). The reply popup follows the "Markdown Reader" extension's matching theme pair (one-dark / one-light). Deliberate exception: the terminal mirror stays dark in both themes — it mirrors a real terminal pane.
 - **Subagent (sidechain) events filtered out** of the feed — keeps the action feed readable; the main-chain Agent tool call still shows.
 - **Candidates are inert data, launched explicitly** — a candidate is a stored plan, not a running thing; the producer API (`POST /api/candidates`) can't make anything spawn on its own, so a session or external tool proposing work never bypasses your review. Launch reuses the exact `/sessions/new` validation + spawn path (no second way to start a session), and is gated by `maxConcurrent` so a backlog can't flood the machine; `maxPending` bounds the list (adds past it are rejected and logged, never silently dropped). The list is a single JSON file written atomically by the one event loop — same single-writer pattern as titles/AI-titles, no locking. **In-page tabs, not a second page**: the Candidates view shares the one SSE stream, theme, and toast plumbing — it's a view toggle, so launching a candidate and watching it become a live card stays within one app.
+- **Slack watchers poll (never Socket Mode), and the LLM only matches an intent** — polling with a persistent cursor backfills anything posted while the machine was asleep; a real-time socket would silently drop exactly those events, so it was rejected for an intermittently-running tool. And the classifier is scoped as narrowly as possible: it names a configured intent (or none) and nothing else — the skill comes from the config map and the repo/prompt are derived deterministically — so what launches stays under explicit user control, not model whim. Read-only scopes mean a watcher can never post.
 - **`reply` vs `done` is a heuristic** — question detection plus the undelivered-deliverable check. Side-effect matching is deliberately invocation-shaped (`git push`, `gh pr comment`) rather than word-shaped: "show PR commits" must not count as a delivery. It can still misclassify; the cost of an error is just a wrong tile/animation, and the banner shows the actual closing text so the user can judge.
 
 ## 7. Possible future extensions
 
-- **Candidate producers — watchers & the agentic classifier.** Candidates are built to take
-  producers beyond the manual/launch-page/running-session paths shipped today. The next one
-  is a **Slack watcher**: an in-process poll loop that turns an allowlisted reaction/mention
-  into a candidate. It (and a `POST /api/candidates/from-text` endpoint for a session that
-  only has free text) would share a **`classify.js`** — a headless `claude -p` reader
-  (reusing the `aiTitles.js` machinery) that reads the message plus the cwd's skill list and
-  returns a skill-tagged plan `{skill, prompt, reason, confidence}`, editable before launch.
-  The candidate store, API, and UI here are the foundation that work builds on.
+- **Watchers management panel.** Watchers are configured today by hand-editing
+  `watchers.json`; the UI only shows read-only status. A guided panel to create/edit/enable
+  watchers (pick trigger → channel → users → intent→skill map, with validation and a preview
+  of what will match) is a deliberate follow-up — the emphasis is explicit control over how a
+  watcher is added, made easy to use. It overlaps with a future settings panel.
+- **More watcher triggers & post-back.** The trigger shape is built for `keyword`/`reaction`
+  beyond `mention`; and a `postBack: propose` mode could let a launched session draft a reply
+  into the originating Slack thread for one-click approval (adds `chat:write`, kept out of the
+  read-only first cut). A `POST /api/candidates/from-text` endpoint would let a running session
+  hand free text to the same intent classifier.
 - Session history view (ended sessions, durations, outcomes)
 - Desktop notifications (Notification API) when a session flips to `waiting`
 - Backends for kitty / WezTerm (both have remote-control CLIs)

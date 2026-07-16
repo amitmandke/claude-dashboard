@@ -1,0 +1,170 @@
+'use strict';
+
+/**
+ * Agentic resolution: turn a Slack thread that mentions you into a candidate
+ * plan — is it actual work, and if so which repo / skill / prompt. This reuses
+ * the AI-titles machinery (headless `claude -p`, billed to the user's Claude
+ * subscription, no API key; run in HEADLESS_CWD with CLAUDE_DASH_INTERNAL so the
+ * worker is hidden from the registry). It is a read-only reasoning call — it
+ * drafts a plan, it does not run tools or touch a repo; the real work happens
+ * only if you click Launch.
+ *
+ * Runs strictly one-at-a-time (each call spawns a full Claude process), only on
+ * a qualifying thread (never on idle polls). Any failure degrades to a
+ * conservative "unclassified" plan so a mention is never silently dropped.
+ */
+
+const fs = require('fs');
+const { spawn } = require('child_process');
+
+const config = require('../../config');
+const match = require('./match');
+
+const TIMEOUT_MS = 90 * 1000;
+
+let queue = Promise.resolve(); // generations run strictly one at a time
+
+/**
+ * Build the classifier prompt from the thread + context. Two modes:
+ *  - intent mode (`intents` non-empty): match the thread to ONE configured
+ *    intent by name (or none); the skill is decided by config, not the model.
+ *  - free mode: the model judges actionability and picks a skill from `skills`.
+ */
+function buildPrompt({ threadText, prRefs = [], repos = [], skills = [], intents = [] }) {
+  const repoLine = repos.length ? repos.join(', ') : '(none discovered)';
+  const prLine = prRefs.length
+    ? prRefs.map((r) => `${r.repo}#${r.number}`).join(', ')
+    : '(no PR links in the thread)';
+  const head =
+    'You triage a Slack thread that mentioned a specific engineer, to decide whether it is ' +
+    'real work for them versus social chatter, an FYI, or an already-resolved discussion.\n\n';
+  const context =
+    `PR references detected: ${prLine}\n` +
+    `Known repos (owner/repo): ${repoLine}\n\n` +
+    `Thread (oldest first):\n${threadText}`;
+
+  if (intents.length) {
+    // Intent mode: the model's ONLY job is to name a matching intent. The skill,
+    // repo, launch prompt and reason are all derived deterministically by the
+    // caller — the model does not choose them.
+    const intentLines = intents.map((it) => `- ${it.name}: ${it.description || ''}`.trim()).join('\n');
+    return (
+      head +
+      'Match the thread to exactly ONE of these intents, or null if none is actionable work for them:\n' +
+      `${intentLines}\n\n` +
+      'Reply with ONLY a JSON object, no prose, no code fences:\n' +
+      '{"intent": "<intent-name>"|null, "confidence": 0.0-1.0}\n\n' +
+      'Rules: "intent" MUST be exactly one of the names listed above, or null. Judge only which ' +
+      'intent (if any) fits — nothing else.\n\n' +
+      context
+    );
+  }
+
+  const skillLines = skills.map((s) => `- ${s.name}: ${s.description || ''}`.trim()).join('\n');
+  return (
+    head +
+    'Reply with ONLY a JSON object, no prose, no code fences:\n' +
+    '{"actionable": true|false, "repo": "owner/repo"|null, "skill": "<skill-name>"|null, ' +
+    '"prompt": "<what the launched session should do>", "reason": "<one line: why this is for them>", ' +
+    '"confidence": 0.0-1.0}\n\n' +
+    'Rules: pick "repo" from a PR link if present, else from the repo the thread is clearly about, ' +
+    'else null. Pick "skill" ONLY from the list below (or null if none fits). Keep "prompt" concrete ' +
+    'and self-contained. If not actionable, set "actionable": false and the other fields may be null.\n\n' +
+    `Available skills:\n${skillLines || '(none)'}\n\n` +
+    context
+  );
+}
+
+/** Extract the first JSON object from model output (tolerates fences/prose). */
+function parseResult(raw) {
+  if (!raw) return null;
+  let text = String(raw).trim();
+  const fence = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) text = fence[1].trim();
+  const start = text.indexOf('{');
+  const end = text.lastIndexOf('}');
+  if (start === -1 || end <= start) return null;
+  let obj;
+  try {
+    obj = JSON.parse(text.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  return {
+    actionable: obj.actionable === true,
+    intent: typeof obj.intent === 'string' && obj.intent.trim() ? obj.intent.trim() : null,
+    repo: typeof obj.repo === 'string' && obj.repo.trim() ? obj.repo.trim().toLowerCase() : null,
+    skill: typeof obj.skill === 'string' && /^[\w:-]+$/.test(obj.skill.trim()) ? obj.skill.trim() : '',
+    prompt: typeof obj.prompt === 'string' ? obj.prompt.trim() : '',
+    reason: typeof obj.reason === 'string' ? obj.reason.trim() : '',
+    confidence: Number.isFinite(obj.confidence) ? Math.max(0, Math.min(1, obj.confidence)) : 0,
+  };
+}
+
+/**
+ * Conservative fallback when the classifier can't run or returns garbage: stage
+ * the mention anyway (never drop it) as unclassified, so the user decides. Uses
+ * the first detected PR ref as a repo hint when there is one.
+ */
+function fallbackPlan({ threadText, prRefs = [] }) {
+  return {
+    actionable: true,
+    intent: null,
+    repo: prRefs[0] ? prRefs[0].repo : null,
+    skill: '',
+    prompt: threadText.slice(0, 500),
+    reason: '(unclassified — Slack thread mentioning you; classifier unavailable)',
+    confidence: 0,
+    unclassified: true,
+  };
+}
+
+function runHeadless(prompt) {
+  // Mirrors aiTitles.runHeadless: a hidden, subscription-billed `claude -p` call.
+  return new Promise((resolve, reject) => {
+    fs.mkdirSync(config.HEADLESS_CWD, { recursive: true });
+    const child = spawn(config.CLAUDE_BIN, ['-p', '--model', config.AI_TITLE_MODEL], {
+      cwd: config.HEADLESS_CWD,
+      env: { ...process.env, CLAUDE_DASH_INTERNAL: '1' },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error('classify timed out'));
+    }, TIMEOUT_MS);
+    child.stdout.on('data', (d) => (out += d));
+    child.stderr.on('data', (d) => (err += d));
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(out);
+      else reject(new Error(`claude -p exited ${code}: ${err.slice(0, 200)}`));
+    });
+    child.stdin.end(prompt);
+  });
+}
+
+/**
+ * Classify one thread → a plan. Queued so only one headless process runs at a
+ * time. `_run` is injectable for tests (defaults to the real headless call).
+ */
+function classify(input, { _run = runHeadless } = {}) {
+  const task = queue.then(async () => {
+    try {
+      const plan = parseResult(await _run(buildPrompt(input)));
+      return plan || fallbackPlan(input);
+    } catch {
+      return fallbackPlan(input);
+    }
+  });
+  // keep the chain alive even if a caller ignores rejections (they can't: we catch)
+  queue = task.catch(() => {});
+  return task;
+}
+
+module.exports = { classify, buildPrompt, parseResult, fallbackPlan };

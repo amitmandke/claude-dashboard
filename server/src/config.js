@@ -47,4 +47,16 @@ module.exports = {
   // since they've already become a live session (you can also ✕ Clear either now).
   CANDIDATES_RETENTION_DAYS: parseInt(process.env.CLAUDE_DASH_RETENTION_DAYS || '7', 10),
   CANDIDATES_LAUNCHED_RETENTION_HOURS: parseInt(process.env.CLAUDE_DASH_LAUNCHED_RETENTION_HOURS || '2', 10),
+
+  // Slack watchers — a candidate producer. A watcher polls a channel (config in
+  // ~/.claude-dashboard/watchers.json) for threads that @-mention you and stages
+  // candidates. Off unless that file exists; disable outright with WATCHERS=0.
+  // Repo resolution scans this base dir for git checkouts (owner/repo -> path),
+  // preferring the checkout under PREFER_CHECKOUT when a repo is cloned twice.
+  WATCHERS_ENABLED: process.env.CLAUDE_DASH_WATCHERS !== '0',
+  WATCHERS_CODEBASE_DIR: process.env.CLAUDE_DASH_CODEBASE_DIR || path.join(os.homedir(), 'codebase'),
+  WATCHERS_PREFER_CHECKOUT: process.env.CLAUDE_DASH_PREFER_CHECKOUT || null,
+  WATCHERS_THREAD_TTL_DAYS: parseInt(process.env.CLAUDE_DASH_WATCHER_THREAD_TTL_DAYS || '3', 10),
+  WATCHERS_SEEN_TTL_DAYS: parseInt(process.env.CLAUDE_DASH_WATCHER_SEEN_TTL_DAYS || '7', 10),
+  WATCHERS_MAX_THREADS: parseInt(process.env.CLAUDE_DASH_WATCHER_MAX_THREADS || '50', 10),
 };
