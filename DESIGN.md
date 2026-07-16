@@ -201,8 +201,13 @@ without switching.
  └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Each card shows the **skill**, the **prompt**, the **reason**, the directory, and the
-**source/producer** (+ a provenance link when present). The **filter** box narrows the
+Each card leads with a derived **title** (a PR as `repo #123`, else "Slack thread", else the
+first prompt line) and **link chips** (a PR link and/or a 💬 Slack-thread link, opened in a new
+tab), so the "what is this" is scannable rather than buried. Below that: the **skill** chip, the
+**reason**, the **prompt** (clamped to 3 lines with a ▾ more toggle to expand, and a separate ✎
+to edit — so reading doesn't fight editing), the directory, and the **source/producer**. The
+`ref` may be a plain URL or an object (`url` / `slackPermalink` / `prRefs`); the title/chips
+handle both. The **filter** box narrows the
 visible cards by case-insensitive substring across skill / prompt / reason / cwd / source —
 purely client-side, since the full list is already in the snapshot. Per-card actions:
 
