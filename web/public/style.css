@@ -918,10 +918,29 @@ dialog input:focus, dialog textarea:focus { border-color: var(--accent); }
   padding: 1px 7px;
 }
 
-.cand-prompt { margin: 0; color: var(--text-soft); font-size: 13px; white-space: pre-wrap; word-break: break-word; }
-.cand-prompt.cand-editable { cursor: text; border-radius: 5px; margin: 0 -4px; padding: 1px 4px; }
-.cand-prompt.cand-editable:hover { background: var(--evt-hover); }
+.cand-title { margin: 0; font-size: 14px; font-weight: 650; color: var(--text); }
+.cand-links { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12px; }
 .cand-reason { margin: 0; color: var(--dim); font-size: 12px; font-style: italic; }
+
+.cand-promptwrap { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 6px; }
+.cand-prompt {
+  margin: 0;
+  flex: 1;
+  min-width: 0;
+  color: var(--text-soft);
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  cursor: pointer;
+}
+.cand-prompt:not(.expanded) {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.cand-prompt-more { padding: 2px 7px; font-size: 11px; align-self: flex-end; }
+.cand-prompt-edit { padding: 2px 8px; font-size: 12px; }
 
 .cand-meta {
   display: flex;

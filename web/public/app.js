@@ -655,6 +655,32 @@ async function reprioritize(c, delta) {
   catch (err) { toast('Reprioritize failed: ' + err.message); }
 }
 
+// A candidate's `ref` may be a plain URL string or an object with url /
+// slackPermalink / prRefs. Derive a scannable title and clickable link chips so
+// the card leads with "what is this" instead of a wall-of-text prompt.
+function prFromUrl(u) {
+  const m = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(u || '');
+  return m ? { repo: m[2], number: +m[3], url: u } : null;
+}
+function candTitle(c) {
+  const ref = c.ref || {};
+  const url = typeof ref === 'string' ? ref : ref.url;
+  const pr = (ref.prRefs && ref.prRefs[0]) || prFromUrl(url);
+  if (pr) return `${pr.repo} #${pr.number}`;
+  if (ref.slackPermalink || (typeof ref === 'string' && ref.includes('slack.com'))) return 'Slack thread';
+  return (c.action.prompt || '(no prompt)').split('\n')[0].slice(0, 80);
+}
+function candLinks(c) {
+  const ref = c.ref || {};
+  const out = [];
+  const url = typeof ref === 'string' ? ref : ref.url;
+  const pr = (ref.prRefs && ref.prRefs[0]) || prFromUrl(url);
+  if (pr) out.push({ label: `PR ${pr.repo}#${pr.number} ↗`, href: pr.url || url });
+  else if (url) out.push({ label: '↗ link', href: url });
+  if (ref.slackPermalink) out.push({ label: '💬 Slack thread ↗', href: ref.slackPermalink });
+  return out;
+}
+
 function buildCandidate(c, ctx) {
   const card = candTemplate.content.cloneNode(true).querySelector('.cand-card');
   card.dataset.status = c.status;
@@ -669,21 +695,41 @@ function buildCandidate(c, ctx) {
   stateBadge.textContent = c.status;
   stateBadge.hidden = c.status === 'pending';
 
-  const promptEl = card.querySelector('.cand-prompt');
-  promptEl.textContent = c.action.prompt || '(no prompt)';
+  card.querySelector('.cand-title').textContent = candTitle(c);
+
+  const linksEl = card.querySelector('.cand-links');
+  for (const l of candLinks(c)) {
+    const a = document.createElement('a');
+    a.href = l.href; a.textContent = l.label;
+    a.target = '_blank'; a.rel = 'noopener'; a.className = 'cand-ref';
+    linksEl.appendChild(a);
+  }
+
   const reasonEl = card.querySelector('.cand-reason');
   reasonEl.textContent = c.reason || '';
   reasonEl.hidden = !c.reason;
 
+  // prompt clamps by default; click (or "▾ more") expands, a separate ✎ edits
+  const promptEl = card.querySelector('.cand-prompt');
+  promptEl.textContent = c.action.prompt || '(no prompt)';
+  const moreBtn = card.querySelector('.cand-prompt-more');
+  const toggle = () => {
+    const open = promptEl.classList.toggle('expanded');
+    moreBtn.textContent = open ? '▴ less' : '▾ more';
+  };
+  promptEl.addEventListener('click', toggle);
+  moreBtn.addEventListener('click', toggle);
+  // reveal the "more" toggle only when the text actually overflows the clamp
+  requestAnimationFrame(() => {
+    if (promptEl.scrollHeight - promptEl.clientHeight > 4) moreBtn.hidden = false;
+  });
+  card.querySelector('.cand-prompt-edit').addEventListener('click', () => editPrompt(c));
+
   const cwdEl = card.querySelector('.cand-cwd');
-  cwdEl.textContent = c.action.cwd;
-  cwdEl.title = c.action.cwd;
+  cwdEl.textContent = c.action.cwd || '(no repo — pick one before launch)';
+  cwdEl.title = c.action.cwd || '';
   card.querySelector('.cand-source').textContent =
     c.source + (c.producer && c.producer !== 'user' ? ' · ' + c.producer : '');
-
-  const ref = card.querySelector('.cand-ref');
-  const href = c.ref && (c.ref.slackPermalink || c.ref.url || c.ref.href);
-  if (href) { ref.href = href; ref.hidden = false; }
 
   const launchBtn = card.querySelector('.cand-launch');
   const dismissBtn = card.querySelector('.cand-dismiss');
@@ -712,12 +758,10 @@ function buildCandidate(c, ctx) {
     skillBtn.addEventListener('click', () => editSkill(c));
     upBtn.addEventListener('click', () => reprioritize(c, +1));
     downBtn.addEventListener('click', () => reprioritize(c, -1));
-    promptEl.classList.add('cand-editable');
-    promptEl.addEventListener('click', () => editPrompt(c));
   } else {
     // history item — a dismissed one can be restored; either can be cleared now
     // (otherwise it auto-prunes: launched soon, dismissed after a few days)
-    for (const b of [launchBtn, dismissBtn, skillBtn, upBtn, downBtn]) b.hidden = true;
+    for (const b of [launchBtn, dismissBtn, skillBtn, upBtn, downBtn, card.querySelector('.cand-prompt-edit')]) b.hidden = true;
     clearBtn.hidden = false;
     clearBtn.addEventListener('click', () =>
       withFeedback(clearBtn, 'Clear failed', async () => {
