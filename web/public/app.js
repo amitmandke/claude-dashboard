@@ -531,7 +531,7 @@ async function loadSkills() {
     const current = nsSkill.value;
     nsSkill.innerHTML =
       '<option value="">(none — free-form prompt)</option>' +
-      skills.map((s) => `<option value="${s.name}">/${s.name}${s.scope === 'project' ? ' · project' : ''}</option>`).join('');
+      skills.map((s) => `<option value="${s.name}">/${s.name}${s.scope !== 'user' ? ' · ' + s.scope : ''}</option>`).join('');
     if (skillDescriptions[current] !== undefined) nsSkill.value = current;
     updateSkillUi();
   } catch { /* dropdown still usable with just "(none)" */ }
@@ -827,7 +827,7 @@ async function ncLoadSkills() {
     const current = ncSkill.value;
     ncSkill.innerHTML =
       '<option value="">(none — free-form prompt)</option>' +
-      skills.map((s) => `<option value="${s.name}">/${s.name}${s.scope === 'project' ? ' · project' : ''}</option>`).join('');
+      skills.map((s) => `<option value="${s.name}">/${s.name}${s.scope !== 'user' ? ' · ' + s.scope : ''}</option>`).join('');
     if (ncSkillDescriptions[current] !== undefined) ncSkill.value = current;
     ncUpdateSkillUi();
   } catch { /* dropdown still usable with just "(none)" */ }

@@ -12,7 +12,7 @@ only) reads Claude Code's own state files — `~/.claude/sessions/<pid>.json` (l
 registry: `status: busy|idle|waiting`, `waitingFor`), `~/.claude/projects/<encoded-cwd>/
 <sessionId>.jsonl` (transcripts → starting prompt + action feed + live token usage),
 `~/.claude/history.jsonl` (recent project dirs), `~/.claude/skills|commands` +
-`<cwd>/.claude/skills|commands` (skill picker) — and pushes snapshots to a vanilla
+`<cwd>/.claude/skills|commands` + enabled-plugin skills (skill picker) — and pushes snapshots to a vanilla
 HTML/CSS/JS frontend (`web/public/`) over SSE. Interaction (typing into sessions,
 Esc/digit keys, terminal mirror, focus, end, launch) is routed through per-session
 terminal backends in `services/terminals/` — tmux, iTerm2, or Terminal.app, detected
@@ -109,6 +109,16 @@ a function testable, export it (several are exported solely for tests, noted as 
   themes (it mirrors a real terminal pane).
 - `~/.claude/sessions/*.json` is an internal Claude Code format (versioned via its
   `version` field); a Claude Code upgrade may change it — fix `sessionRegistry.js` first.
+- **Skill discovery must include enabled plugins, not just the two folders.** A
+  marketplace plugin ships its skill under `~/.claude/plugins/…`, NOT `~/.claude/skills`,
+  so `skills.js` cross-references `settings.json` `enabledPlugins` (which are on) with
+  `plugins/installed_plugins.json` (→ `installPath`, newest `lastUpdated` wins) and scans
+  each install for a root `SKILL.md` (name from frontmatter, else the plugin id), plus
+  `skills/` and `commands/` subtrees. Only enabled plugins count, mirroring `/`. If a
+  Claude Code upgrade moves plugin state, fix `enabledPluginPaths()` — a picker missing a
+  skill is almost always a new skill *source*, not a cache (there is no cache: the FS is
+  read fresh per request and the UI refetches on dialog open). Scope precedence on a name
+  clash is plugin < user < project.
 - Quick actions read the digit to send from the **live dialog** (`dialog.js` parses
   the mirrored screen) — never assume option numbers. Claude Code shows a two-option
   menu (`1=Yes`, `2=No … (esc)`) for commands it can't build a reusable allow-rule for
