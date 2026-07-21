@@ -235,7 +235,7 @@ or you can **✕ Clear** one right away.
 6. **Jump to the terminal** — "Open in iTerm ↗" raises that exact iTerm2 tab/pane for full manual control.
 7. **Interrupt a running turn** — ⎋ Esc in the composer row sends a bare Esc to the pane, exactly like pressing Esc in the terminal (stops the current turn; the session stays alive and waits for new instructions).
 8. **One-click permission handling** — flashing cards show Approve / Always / Deny / Deny-&-redirect buttons that inject the matching keystrokes.
-9. **Start a new session from the UI** — ＋ New Session opens a dialog with a recent-projects picker (from `~/.claude/history.jsonl`), an optional **skill picker** (user + project skills/commands, like typing `/` in Claude; the prompt field becomes the skill's arguments), and an optional initial prompt (Enter launches, Shift+Enter inserts a newline, matching Claude Code's composer); the server opens a **new iTerm2 window**, `cd`s there, runs `claude "<prompt>"` (e.g. `claude "/review-pr 1234"`), and the new card appears on the dashboard within seconds (the session registers itself).
+9. **Start a new session from the UI** — ＋ New Session opens a dialog with a recent-projects picker (from `~/.claude/history.jsonl`), an optional **skill picker** (user + project skills/commands *and enabled-plugin skills*, like typing `/` in Claude; the prompt field becomes the skill's arguments), and an optional initial prompt (Enter launches, Shift+Enter inserts a newline, matching Claude Code's composer); the server opens a **new iTerm2 window**, `cd`s there, runs `claude "<prompt>"` (e.g. `claude "/review-pr 1234"`), and the new card appears on the dashboard within seconds (the session registers itself).
 10. **Triage by status** — summary tiles filter the grid to just waiting / reply / done / busy sessions.
 11. **End a session** — ✕ on the card interrupts, sends `/exit`, and closes the pane once the process exits. A `done` card closes without asking; a working/blocked/awaiting card asks for confirmation first, since ending terminates the session's context and in-progress work.
 12. **Rename a session** — ✎ next to the title; empty input reverts to the auto title.
@@ -260,7 +260,7 @@ server/src/
 │   ├── customTitles.js       user-set titles (~/.claude-dashboard/titles.json)
 │   ├── aiTitles.js           AI-derived titles via headless `claude -p` (cache: ai-titles.json)
 │   ├── projects.js           recent project dirs from ~/.claude/history.jsonl
-│   ├── skills.js             skill/command discovery (~/.claude + <cwd>/.claude)
+│   ├── skills.js             skill/command discovery (~/.claude + <cwd>/.claude + enabled plugins)
 │   ├── candidates/
 │   │   └── store.js          launchable candidate list (~/.claude-dashboard/candidates.json)
 │   ├── watchers/             Slack watcher — candidate producer (see "Slack watchers" below)
