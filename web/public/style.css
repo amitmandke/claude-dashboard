@@ -1011,6 +1011,23 @@ button.primary-btn:disabled, button.ghost-btn:disabled { opacity: .45; cursor: d
   color: var(--feed-time);
   font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
+.watch-channels { display: flex; flex-direction: column; gap: 4px; }
+.watch-chan {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  font-size: 11px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+.watch-chan-name { color: var(--text); font-weight: 600; }
+.watch-chan-watched { color: var(--feed-time); }
+.watch-chan-set {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-family: inherit;
+}
 .watch-error { margin: 0; color: var(--red-text); font-size: 12px; }
 .watch-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 2px; }
 .watch-actions .ghost-btn { padding: 5px 11px; font-size: 12px; }

@@ -232,6 +232,16 @@ async function handle(req, res, url) {
     const r = url.pathname.endsWith('stop-all') ? watchers.stopAll() : watchers.startAll();
     return json(res, r && r.ok === false ? 400 : 200, r || { ok: true }), true;
   }
+  // move a channel's "last watched" cursor: { channel, at } where at is "now"
+  // or a date (ISO/epoch-ms). Skips backfill you've already handled manually.
+  const cMatch = url.pathname.match(/^\/api\/watchers\/([^/]+)\/cursor$/);
+  if (cMatch && req.method === 'POST') {
+    const name = decodeURIComponent(cMatch[1]);
+    const body = await readBody(req);
+    if (!body || !body.channel) return json(res, 400, { error: 'channel is required' }), true;
+    const r = watchers.setChannelCursor(name, body.channel, body.at != null ? body.at : 'now');
+    return json(res, r && r.ok === false ? 400 : 200, r), true;
+  }
 
   // ---- candidate sessions: a launchable, prioritized pending list a producer
   // (running session, watcher, or the user) adds to; the user launches or

@@ -266,7 +266,7 @@ server/src/
 │   ├── watchers/             Slack watcher — candidate producer (see "Slack watchers" below)
 │   │   ├── index.js          per-watcher runtime (Map): poll loop, pipeline (runWatcherOnce), pause/resume/run-now
 │   │   ├── config.js         load/validate watchers.json (fail-closed); trigger + intent map
-│   │   ├── state.js          persistent cursor + tracked threads + seen dedupe (watchers-state.json)
+│   │   ├── state.js          per-channel cursor + tracked threads + seen dedupe (watchers-state.json)
 │   │   ├── slack.js          zero-dep Slack Web API client (read-only; injectable transport)
 │   │   ├── repos.js          owner/repo → local checkout, auto-discovered from git remotes
 │   │   ├── match.js          mention detection, noise filter, PR-ref extraction, thread render
@@ -303,8 +303,9 @@ server/src/
 | `/api/candidates/:id/launch` | POST | spawn it (same path as `/sessions/new`), mark `launched`; 409 at the `maxConcurrent` cap |
 | `/api/candidates/:id/dismiss` · `/undismiss` | POST | mark `dismissed` / restore to `pending` |
 | `/api/candidates/:id` | DELETE | remove the item from the list now (the ✕ Clear action) |
-| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error |
+| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error, and per-channel `{ id, name, lastWatchedAt }` |
 | `/api/watchers/:name/{pause,resume,run}` | POST | pause a watcher (persists `enabled:false`), resume it (persists `enabled:true`), or run one poll now |
+| `/api/watchers/:name/cursor` | POST | move a channel's "last watched" cursor: `{ channel, at }` (`at` = `"now"` or a date); clears that channel's tracked threads/seen |
 | `/api/watchers/{stop-all,start-all}` | POST | pause / resume every watcher at once |
 
 The SSE snapshot is `{sessions, candidates, caps:{maxConcurrent, maxPending}, now}` — the
@@ -353,7 +354,8 @@ ships `watchers.example.json` with placeholders only). Validation is **fail-clos
 watcher with no channels or no trigger users does not run — there is no "watch everything".
 Each watcher declares:
 
-- `channels` — Slack channel IDs the bot has been invited to.
+- `channels` — Slack channel IDs the bot has been invited to. **All listed channels are
+  scanned** (in parallel, each with its own independent cursor); it is not just the first.
 - `trigger` — what makes a thread worth looking at. One type (the shape leaves room for
   `keyword`/`reaction` later):
   - `{ type: "mention", users:[…] }` — a channel thread qualifies when one of those users is
@@ -364,13 +366,21 @@ Each watcher declares:
   classifier falls back to picking a skill freely (looser, less controlled).
 - `poll.everySeconds` (floored at 30) and `action.preferCheckout`.
 
-**Polling with a persistent cursor** (`state.js` → `watchers-state.json`) is the reliability
-backbone. Each poll asks Slack's `conversations.history` for messages `oldest` = the saved
-cursor, so **anything posted while the machine was asleep is backfilled** on the next poll
-(Socket Mode was rejected precisely because it drops events during downtime). Slack's history
-endpoint doesn't return thread replies, so a `@you` that lands deep in an existing thread is
-caught by re-scanning tracked threads' `conversations.replies` each tick — bounded by a
-retention window and a thread cap (both configurable); the bound is logged, never silent.
+**Polling with a per-channel persistent cursor** (`state.js` → `watchers-state.json`) is the
+reliability backbone. State is keyed `watcher → channel`, so each channel keeps its **own**
+cursor/threads and backfills independently. Each poll asks Slack's `conversations.history` for
+messages `oldest` = that channel's saved cursor, so **anything posted while the machine was
+asleep is backfilled** on the next poll (Socket Mode was rejected precisely because it drops
+events during downtime). Slack's history endpoint doesn't return thread replies, so a `@you`
+that lands deep in an existing thread is caught by re-scanning tracked threads'
+`conversations.replies` each tick — bounded by a retention window and a thread cap (both
+configurable); the bound is logged, never silent. A channel's cursor is its **"last watched"**
+point, surfaced per channel in the Watchers tab and **editable** (`POST /api/watchers/:name/cursor`,
+`{ channel, at }` where `at` is `"now"` or a date): moving it forward skips a backlog you have
+already handled by hand, and clears that channel's tracked threads/seen for a clean start.
+Channel **names** (e.g. `#eng-prov`) are resolved once via `conversations.info` and cached in
+state; until the app is reinstalled with the read-only `channels:read`/`groups:read` scope the
+tab falls back to showing the raw channel id.
 
 **Pipeline per qualifying thread** (`index.js` → `runWatcherOnce`): fetch the whole thread →
 match it to an intent via `classify.js` (headless `claude -p --model haiku`, reusing the
@@ -388,17 +398,21 @@ The token is resolved from a reference in config (`slack.botToken`), never store
 repo. Three schemes, resolved by `config.resolveToken`: `keychain:<service>[:<account>]` (macOS
 Keychain via the `security` CLI — encrypted, and never placed in `process.env` so it isn't
 inherited by the headless `claude -p` children), `@/abs/path` (a `chmod 600` file), or
-`$ENV_VAR`. Scopes are read-only (no `chat:write`), so a watcher structurally cannot post.
+`$ENV_VAR`. Scopes are read-only (`channels:history`/`groups:history` to read, plus optional
+`channels:read`/`groups:read` for friendly channel names — no `chat:write`), so a watcher
+structurally cannot post.
 
 **Runtime & controls.** Each configured watcher is one entry in a `Map` (state ∈
 `running`/`paused`/`error`/`disabled`), so one can be controlled without touching the others or
 the dashboard. The **Watchers tab** shows each watcher's state, last poll, staged count, and last
-error, with **Pause / Resume / Run-now** per watcher and **Stop-all / Start-all** globally.
-Pause/Resume **persist** to `watchers.json` (`config.setEnabled` flips `enabled`, preserving all
-other fields) so they survive a restart; a paused watcher comes back paused. Status rides the SSE
-snapshot (`watchers` key) so the tab is live. A pristine **first run baselines** (records the
-cursor, stages nothing) so an existing channel's backlog isn't dumped as candidates; only a
-saved cursor drives backfill on later runs.
+error, plus **each watched channel** with its friendly name and "last watched" time, with
+**Pause / Resume / Run-now** per watcher, a per-channel **⏱ set** (move the cursor), and
+**Stop-all / Start-all** globally. Pause/Resume **persist** to `watchers.json`
+(`config.setEnabled` flips `enabled`, preserving all other fields) so they survive a restart; a
+paused watcher comes back paused. Status rides the SSE snapshot (`watchers` key) so the tab is
+live. A channel's pristine **first run baselines** (records its cursor, stages nothing) so an
+existing channel's backlog isn't dumped as candidates; only a saved cursor drives backfill on
+later runs.
 
 The Slack client (`slack.js`) is coverage-excluded like the terminal backends (pure network),
 while the pipeline + control logic (`runWatcherOnce`, pause/resume, config/state/match/classify/repos)

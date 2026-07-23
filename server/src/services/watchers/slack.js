@@ -72,6 +72,8 @@ function createClient({ token, request = httpsRequest, wait = sleep } = {}) {
     history: (p) => call('conversations.history', { limit: 200, ...p }),
     /** All messages of a thread (parent + replies) newer than `oldest`. */
     replies: (p) => call('conversations.replies', { limit: 200, ...p }),
+    /** Channel metadata (name) — needs channels:read / groups:read. */
+    info: (p) => call('conversations.info', p),
     /** A shareable link to a message, used as a candidate's `ref`. */
     permalink: (p) => call('chat.getPermalink', p),
     call,

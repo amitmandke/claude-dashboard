@@ -281,15 +281,16 @@ function freshState() {
 // dedicated "first run baselines" test), so staging tests must arm a cursor.
 function freshArmed() {
   freshState();
-  state.advanceCursor('w', '1');
-  state.advanceCursor('dm', '1');
+  state.advanceCursor('w', 'C1', '1');
 }
 
-test('advanceCursor: only moves forward', () => {
+test('advanceCursor: only moves forward (per channel)', () => {
   freshState();
-  assert.equal(state.advanceCursor('w', '5.0'), '5.0');
-  assert.equal(state.advanceCursor('w', '3.0'), '5.0'); // older ignored
-  assert.equal(state.advanceCursor('w', '9.0'), '9.0');
+  assert.equal(state.advanceCursor('w', 'C1', '5.0'), '5.0');
+  assert.equal(state.advanceCursor('w', 'C1', '3.0'), '5.0'); // older ignored
+  assert.equal(state.advanceCursor('w', 'C1', '9.0'), '9.0');
+  assert.equal(state.advanceCursor('w', 'C2', '2.0'), '2.0'); // a different channel is independent
+  assert.equal(state.cursorOf('w', 'C1'), '9.0');
 });
 
 test('seen: mark + isSeen keyed by channel:thread', () => {
@@ -303,8 +304,8 @@ test('seen: mark + isSeen keyed by channel:thread', () => {
 test('prune: drops aged threads/seen and caps thread count', () => {
   freshState();
   const now = 10 * 86400000;
-  state.trackThread('w', 'old', now - 5 * 86400000); // 5d old
-  state.trackThread('w', 'new', now);
+  state.trackThread('w', 'C1', 'old', now - 5 * 86400000); // 5d old
+  state.trackThread('w', 'C1', 'new', now);
   state.markSeen('w', 'C1', 'oldseen', now - 8 * 86400000); // 8d old
   state.markSeen('w', 'C1', 'newseen', now);
   const r = state.prune('w', {
@@ -313,21 +314,45 @@ test('prune: drops aged threads/seen and caps thread count', () => {
     seenTtlMs: 7 * 86400000,
     maxThreads: 50,
   });
-  const w = state.forWatcher('w');
-  assert.ok(!w.threads.old && w.threads.new, 'aged thread pruned, fresh kept');
-  assert.ok(!w.seen['C1:oldseen'] && w.seen['C1:newseen'], 'aged seen pruned');
+  const c = state.forChannel('w', 'C1');
+  assert.ok(!c.threads.old && c.threads.new, 'aged thread pruned, fresh kept');
+  assert.ok(!state.forWatcher('w').seen['C1:oldseen'] && state.forWatcher('w').seen['C1:newseen'], 'aged seen pruned');
   assert.equal(r.threadsDropped, 1);
   assert.equal(r.seenDropped, 1);
 });
 
-test('prune: caps to maxThreads by evicting least-recently-active', () => {
+test('prune: caps to maxThreads by evicting least-recently-active (per channel)', () => {
   freshState();
   const now = 1000000;
-  for (let i = 0; i < 5; i++) state.trackThread('w', `t${i}`, now + i); // t0 oldest
+  for (let i = 0; i < 5; i++) state.trackThread('w', 'C1', `t${i}`, now + i); // t0 oldest
   state.prune('w', { nowMs: now + 100, threadTtlMs: 1e12, seenTtlMs: 1e12, maxThreads: 3 });
-  const w = state.forWatcher('w');
-  assert.equal(Object.keys(w.threads).length, 3);
-  assert.ok(!w.threads.t0 && !w.threads.t1 && w.threads.t4, 'oldest evicted, newest kept');
+  const c = state.forChannel('w', 'C1');
+  assert.equal(Object.keys(c.threads).length, 3);
+  assert.ok(!c.threads.t0 && !c.threads.t1 && c.threads.t4, 'oldest evicted, newest kept');
+});
+
+test('setCursor: moves the cursor and clears that channel’s threads + seen only', () => {
+  freshState();
+  state.advanceCursor('w', 'C1', '5.0');
+  state.trackThread('w', 'C1', 't1', 1000);
+  state.markSeen('w', 'C1', 't1', 1000);
+  state.advanceCursor('w', 'C2', '9.0'); // a sibling channel must be untouched
+  state.trackThread('w', 'C2', 't2', 1000);
+
+  state.setCursor('w', 'C1', '100.0', { clearThreads: true });
+  assert.equal(state.cursorOf('w', 'C1'), '100.0');       // moved forward past the gap
+  assert.deepEqual(state.forChannel('w', 'C1').threads, {}); // C1 threads cleared
+  assert.equal(state.isSeen('w', 'C1', 't1'), false);      // C1 seen cleared
+  assert.equal(state.cursorOf('w', 'C2'), '9.0');          // C2 cursor intact
+  assert.ok(state.forChannel('w', 'C2').threads.t2, 'C2 threads intact');
+});
+
+test('channel name cache: setChannelName / channelNameOf, no create on read', () => {
+  freshState();
+  assert.equal(state.channelNameOf('w', 'C1'), null);
+  state.setChannelName('w', 'C1', '#eng-prov');
+  assert.equal(state.channelNameOf('w', 'C1'), '#eng-prov');
+  assert.equal(state.cursorOf('w', 'never'), null); // reading an unknown channel doesn't throw/create
 });
 
 // ---- classify.js -----------------------------------------------------------
@@ -408,6 +433,7 @@ function stubClient({ history = [], repliesByTs = {} }) {
       return { messages: msgs, has_more: false };
     },
     async permalink() { return { permalink: 'https://slack/x' }; },
+    async info({ channel }) { return { channel: { id: channel, name: `chan-${channel}` } }; },
   };
 }
 
@@ -431,7 +457,7 @@ test('runWatcherOnce: first run (no cursor) baselines — stages nothing, record
   });
   assert.equal(r.staged, 0, 'no backlog staged on first run');
   assert.equal(candidates.added.length, 0);
-  assert.equal(state.forWatcher('w').cursor, '100.1', 'cursor baselined to newest so later polls only see newer');
+  assert.equal(state.cursorOf('w', 'C1'), '100.1', 'cursor baselined to newest so later polls only see newer');
 });
 
 test('runWatcherOnce: a top-level mention stages one candidate with resolved cwd', async () => {
@@ -508,7 +534,7 @@ test('runWatcherOnce: no mention → nothing staged but cursor advances', async 
     client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
   });
   assert.equal(r.staged, 0);
-  assert.equal(state.forWatcher('w').cursor, '77.0');
+  assert.equal(state.cursorOf('w', 'C1'), '77.0');
 });
 
 // --- intent mode: the LLM only names an intent; skill/repo/prompt are derived ---
@@ -581,6 +607,32 @@ test('runWatcherOnce: empty cwd when repo cannot be resolved, flagged in reason'
   assert.match(candidates.added[0].reason, /pick a repo/);
 });
 
+test('runWatcherOnce: scans all configured channels, each with its own cursor', async () => {
+  freshState();
+  // arm both channels so this is a steady-state pass (not a baseline run)
+  state.advanceCursor('w', 'C1', '1');
+  state.advanceCursor('w', 'C2', '1');
+  const candidates = fakeCandidates();
+  const byChannel = {
+    C1: [{ ts: '100.1', user: 'U9', text: 'hey <@U1> review github.com/acme/widgets/pull/1' }],
+    C2: [{ ts: '200.1', user: 'U9', text: 'and <@U1> this github.com/acme/widgets/pull/2' }],
+  };
+  const client = {
+    async history({ channel }) { return { messages: byChannel[channel] || [], has_more: false }; },
+    async replies({ ts }) { return { messages: (Object.values(byChannel).flat().find((m) => m.ts === ts) ? [] : []), has_more: false }; },
+    async permalink() { return { permalink: 'https://slack/x' }; },
+    async info({ channel }) { return { channel: { name: `chan-${channel}` } }; },
+  };
+  const r = await loop.runWatcherOnce(
+    { name: 'w', channels: ['C1', 'C2'], mentionUsers: ['U1'], everySeconds: 120 },
+    { client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000 }
+  );
+  assert.equal(r.staged, 2, 'one candidate from each channel');
+  assert.equal(state.cursorOf('w', 'C1'), '100.1');
+  assert.equal(state.cursorOf('w', 'C2'), '200.1');
+  assert.equal(state.channelNameOf('w', 'C1'), '#chan-C1'); // name resolved + cached
+});
+
 // --- watcher controls: pause/resume/run-now/stop-all/start-all ---
 
 test('watcher controls: start → pause (persists) → resume → run-now, with a fake client', async () => {
@@ -627,6 +679,17 @@ test('watcher controls: start → pause (persists) → resume → run-now, with 
   // run-now works on a live watcher
   const rn = await loop.runNow('mentions');
   assert.equal(rn.ok, true);
+
+  // set-cursor moves a channel's "last watched" and is reflected in status
+  const sc = loop.setChannelCursor('mentions', 'C1', '2026-01-02T03:04:05.000Z');
+  assert.equal(sc.ok, true);
+  assert.equal(sc.lastWatchedAt, '2026-01-02T03:04:05.000Z');
+  const chan = loop.getStatus().watchers.find((w) => w.name === 'mentions').channels.find((c) => c.id === 'C1');
+  assert.equal(chan.lastWatchedAt, '2026-01-02T03:04:05.000Z');
+  // "now" and unknown channel/watcher are handled
+  assert.equal(loop.setChannelCursor('mentions', 'C1', 'now').ok, true);
+  assert.equal(loop.setChannelCursor('mentions', 'C-nope', 'now').ok, false);
+  assert.equal(loop.setChannelCursor('ghost', 'C1', 'now').ok, false);
 
   // stop-all → paused; start-all → running
   loop.stopAll();
