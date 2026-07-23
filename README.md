@@ -102,7 +102,8 @@ or gets posted without your click. It's **off** until you create `~/.claude-dash
 
 - **`mention`** — watch one or more channels the bot is invited to; a thread qualifies when it
   @-mentions one of your configured users (anywhere, including a late reply). Every channel in
-  the list is scanned (in parallel), each with its own independent cursor.
+  the list is scanned (in parallel), each with its own independent cursor. Set `channels` to
+  `"auto"` to watch **every channel the bot is invited to** — no need to list IDs.
 
 You give it an **intent → skill map**: a small headless `claude` call matches each
 qualifying thread to one of *your* named intents, and the mapped skill is what the candidate

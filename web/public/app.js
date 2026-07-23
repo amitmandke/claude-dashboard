@@ -33,6 +33,22 @@ function fmtTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
 
+// Date + time + relative age — for points that can be days old (e.g. a watcher's
+// "last watched" cursor), so being off for a while is legible at a glance.
+function fmtWhen(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const date = d.toLocaleDateString([], { month: 'short', day: 'numeric' });
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const mins = Math.floor((Date.now() - d.getTime()) / 60000);
+  let rel = '';
+  if (mins >= 1440) rel = ` (${Math.floor(mins / 1440)}d ago)`;
+  else if (mins >= 60) rel = ` (${Math.floor(mins / 60)}h ago)`;
+  else if (mins >= 1) rel = ` (${mins}m ago)`;
+  else rel = ' (just now)';
+  return `${date}, ${time}${rel}`;
+}
+
 function fmtTokens(n) {
   if (!n) return '0';
   if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M';
@@ -910,7 +926,8 @@ function buildWatcher(w) {
   const card = watchTemplate.content.cloneNode(true).querySelector('.watch-card');
   card.dataset.state = w.state;
   card.querySelector('.watch-name').textContent = w.name;
-  card.querySelector('.watch-trigger').textContent = w.trigger ? `#${w.trigger}` : '';
+  card.querySelector('.watch-trigger').textContent =
+    (w.trigger ? `#${w.trigger}` : '') + (w.discover ? ' · auto-discover' : '');
 
   const stateEl = card.querySelector('.watch-state');
   stateEl.textContent = w.state;
@@ -945,7 +962,7 @@ function renderWatchChannels(container, w) {
   container.textContent = '';
   const channels = w.channels || [];
   if (!channels.length) {
-    container.textContent = 'no channels';
+    container.textContent = w.discover ? 'discovering channels on next poll…' : 'no channels';
     return;
   }
   for (const ch of channels) {
@@ -960,7 +977,7 @@ function renderWatchChannels(container, w) {
     const when = document.createElement('span');
     when.className = 'watch-chan-watched';
     when.textContent = ch.lastWatchedAt
-      ? `watched through ${fmtTime(ch.lastWatchedAt)}`
+      ? `watched through ${fmtWhen(ch.lastWatchedAt)}`
       : 'baselines on first run';
 
     const setBtn = document.createElement('button');

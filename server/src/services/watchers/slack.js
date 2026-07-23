@@ -74,6 +74,9 @@ function createClient({ token, request = httpsRequest, wait = sleep } = {}) {
     replies: (p) => call('conversations.replies', { limit: 200, ...p }),
     /** Channel metadata (name) — needs channels:read / groups:read. */
     info: (p) => call('conversations.info', p),
+    /** Channels the bot is a member of — for auto-discovery (channels:read/groups:read). */
+    userConversations: (p) =>
+      call('users.conversations', { types: 'public_channel,private_channel', exclude_archived: true, limit: 200, ...p }),
     /** A shareable link to a message, used as a candidate's `ref`. */
     permalink: (p) => call('chat.getPermalink', p),
     call,

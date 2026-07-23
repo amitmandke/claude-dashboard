@@ -355,7 +355,11 @@ watcher with no channels or no trigger users does not run — there is no "watch
 Each watcher declares:
 
 - `channels` — Slack channel IDs the bot has been invited to. **All listed channels are
-  scanned** (in parallel, each with its own independent cursor); it is not just the first.
+  scanned** (in parallel, each with its own independent cursor). Or the string **`"auto"`**
+  to **auto-discover** every channel the bot is a member of (via `users.conversations`,
+  paginated) and scan them all — invite the bot to a channel and it just appears, no config
+  edit. Discovery prefers public + private but degrades to public-only when the token lacks
+  `groups:read` (private channels also need `groups:history` to read anyway).
 - `trigger` — what makes a thread worth looking at. One type (the shape leaves room for
   `keyword`/`reaction` later):
   - `{ type: "mention", users:[…] }` — a channel thread qualifies when one of those users is
@@ -410,9 +414,11 @@ error, plus **each watched channel** with its friendly name and "last watched" t
 **Stop-all / Start-all** globally. Pause/Resume **persist** to `watchers.json`
 (`config.setEnabled` flips `enabled`, preserving all other fields) so they survive a restart; a
 paused watcher comes back paused. Status rides the SSE snapshot (`watchers` key) so the tab is
-live. A channel's pristine **first run baselines** (records its cursor, stages nothing) so an
-existing channel's backlog isn't dumped as candidates; only a saved cursor drives backfill on
-later runs.
+live. The **first time a channel is seen** it baselines to *now* and fetches **no** history —
+so nothing already posted (however recent, answered or not) is ever staged, and the first poll
+stays instant even across many auto-discovered channels. From then on each poll reads only
+`cursor→now` and advances the cursor to the newest message read, so a message is never re-read;
+after downtime the first read is just the missed window.
 
 The Slack client (`slack.js`) is coverage-excluded like the terminal backends (pure network),
 while the pipeline + control logic (`runWatcherOnce`, pause/resume, config/state/match/classify/repos)

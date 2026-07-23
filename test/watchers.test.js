@@ -191,6 +191,19 @@ test('normalizeWatcher: a mention trigger requires channels (fail-closed)', () =
   assert.deepEqual(n.channels, ['C1']);
 });
 
+test('normalizeWatcher: channels "auto" enables discover mode (no explicit channels needed)', () => {
+  const n = wconfig.normalizeWatcher(
+    { name: 'a', channels: 'auto', trigger: { type: 'mention', users: ['U1'] } },
+    0
+  );
+  assert.equal(n.ok, true);
+  assert.equal(n.discover, true);
+  assert.deepEqual(n.channels, []);
+  // an explicit list is NOT discover, and an empty list is still fail-closed
+  assert.equal(wconfig.normalizeWatcher({ name: 'b', channels: ['C1'], users: ['U1'] }, 0).discover, false);
+  assert.equal(wconfig.normalizeWatcher({ name: 'c', channels: [], users: ['U1'] }, 0).ok, false);
+});
+
 test('normalizeIntents: keeps valid intent->skill entries, drops malformed', () => {
   const out = wconfig.normalizeIntents({
     intents: [
@@ -445,19 +458,23 @@ const alwaysActionable = async () => ({
   actionable: true, repo: 'acme/widgets', skill: 'review-go', prompt: 'review it', reason: 'PR for you', confidence: 0.9,
 });
 
-test('runWatcherOnce: first run (no cursor) baselines — stages nothing, records cursor', async () => {
+test('runWatcherOnce: first run (no cursor) baselines to NOW — stages nothing, fetches nothing', async () => {
   freshState(); // NO armed cursor → this is a pristine first run
   const candidates = fakeCandidates();
-  const client = stubClient({
-    history: [{ ts: '100.1', text: 'old thread <@U1> please review' }],
-    repliesByTs: { '100.1': [{ ts: '100.1', user: 'U2', text: '<@U1> review' }] },
-  });
+  let historyCalls = 0;
+  const client = {
+    async history() { historyCalls++; return { messages: [{ ts: '100.1', text: '<@U1> please review' }], has_more: false }; },
+    async replies() { return { messages: [], has_more: false }; },
+    async permalink() { return { permalink: '' }; },
+    async info({ channel }) { return { channel: { name: `chan-${channel}` } }; },
+  };
   const r = await loop.runWatcherOnce(WATCHER, {
-    client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
+    client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1700000000000,
   });
   assert.equal(r.staged, 0, 'no backlog staged on first run');
   assert.equal(candidates.added.length, 0);
-  assert.equal(state.cursorOf('w', 'C1'), '100.1', 'cursor baselined to newest so later polls only see newer');
+  assert.equal(historyCalls, 0, 'first sight fetches no history — instant baseline');
+  assert.equal(state.cursorOf('w', 'C1'), '1700000000.000000', 'cursor baselined to NOW, not the newest message');
 });
 
 test('runWatcherOnce: a top-level mention stages one candidate with resolved cwd', async () => {
@@ -631,6 +648,65 @@ test('runWatcherOnce: scans all configured channels, each with its own cursor', 
   assert.equal(state.cursorOf('w', 'C1'), '100.1');
   assert.equal(state.cursorOf('w', 'C2'), '200.1');
   assert.equal(state.channelNameOf('w', 'C1'), '#chan-C1'); // name resolved + cached
+});
+
+test('runWatcherOnce: discover mode scans every channel the bot is a member of', async () => {
+  freshState();
+  const candidates = fakeCandidates();
+  const byChannel = {
+    C1: [{ ts: '100.1', user: 'U9', text: 'hey <@U1> review github.com/acme/widgets/pull/1' }],
+    C2: [{ ts: '200.1', user: 'U9', text: 'nothing to see here' }],
+  };
+  const client = {
+    async userConversations() { return { channels: [{ id: 'C1' }, { id: 'C2' }] }; },
+    async history({ channel, oldest }) {
+      const all = byChannel[channel] || [];
+      const msgs = oldest ? all.filter((m) => parseFloat(m.ts) > parseFloat(oldest)) : all;
+      return { messages: msgs, has_more: false };
+    },
+    async replies() { return { messages: [], has_more: false }; },
+    async permalink() { return { permalink: 'https://slack/x' }; },
+    async info({ channel }) { return { channel: { name: `chan-${channel}` } }; },
+  };
+  // first pass over each discovered channel baselines to now (stages nothing)…
+  await loop.runWatcherOnce(
+    { name: 'w', discover: true, channels: [], mentionUsers: ['U1'], everySeconds: 120 },
+    { client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 300000 }
+  );
+  assert.equal(candidates.added.length, 0, 'discovered channels baseline first');
+  assert.deepEqual(state.channelsOf('w').sort(), ['C1', 'C2']); // both are now tracked
+
+  // …a later pass with a fresh mention (after the baseline) stages it
+  byChannel.C1.push({ ts: '400.1', user: 'U9', text: 'and <@U1> this github.com/acme/widgets/pull/3' });
+  const r = await loop.runWatcherOnce(
+    { name: 'w', discover: true, channels: [], mentionUsers: ['U1'], everySeconds: 120 },
+    { client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 500000 }
+  );
+  assert.equal(r.staged, 1);
+  assert.equal(candidates.added[0].dedupeKey, 'C1:400.1');
+});
+
+test('runWatcherOnce: discover falls back to public-only when groups:read is missing', async () => {
+  freshState();
+  const candidates = fakeCandidates();
+  const calls = [];
+  const client = {
+    async userConversations({ types }) {
+      calls.push(types);
+      if (types.includes('private_channel')) { const e = new Error('slack users.conversations: missing_scope'); throw e; }
+      return { channels: [{ id: 'C1' }] };
+    },
+    async history() { return { messages: [], has_more: false }; },
+    async replies() { return { messages: [], has_more: false }; },
+    async permalink() { return { permalink: '' }; },
+    async info({ channel }) { return { channel: { name: `chan-${channel}` } }; },
+  };
+  await loop.runWatcherOnce(
+    { name: 'w', discover: true, channels: [], mentionUsers: ['U1'], everySeconds: 120 },
+    { client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000 }
+  );
+  assert.deepEqual(calls, ['public_channel,private_channel', 'public_channel']); // tried both, degraded
+  assert.deepEqual(state.channelsOf('w'), ['C1']); // still discovered the public channel
 });
 
 // --- watcher controls: pause/resume/run-now/stop-all/start-all ---

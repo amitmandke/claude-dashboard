@@ -120,6 +120,12 @@ function channelNameOf(name, channelId) {
   return (c && c.name) || null;
 }
 
+/** Channel ids this watcher has state for (i.e. has actually watched). */
+function channelsOf(name) {
+  const all = load();
+  return all[name] && all[name].channels ? Object.keys(all[name].channels) : [];
+}
+
 /** Record that a thread exists / had activity, so we re-scan it for late mentions. */
 function trackThread(name, channelId, threadTs, nowMs) {
   const c = forChannel(name, channelId);
@@ -198,6 +204,7 @@ module.exports = {
   setCursor,
   setChannelName,
   channelNameOf,
+  channelsOf,
   trackThread,
   setReplyCursor,
   isSeen,

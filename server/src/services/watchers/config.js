@@ -140,8 +140,12 @@ function normalizeWatcher(raw, i) {
   const trigger = normalizeTrigger(raw);
   if (trigger.error) return { ok: false, name, reason: trigger.error };
 
-  const channels = asArray(raw.channels);
-  if (channels.length === 0) {
+  // `channels: "auto"` = discover every channel the bot is a member of (via
+  // users.conversations) and scan them all; an explicit array watches just
+  // those. An empty array stays fail-closed (watches nothing).
+  const discover = typeof raw.channels === 'string' && raw.channels.trim().toLowerCase() === 'auto';
+  const channels = discover ? [] : asArray(raw.channels);
+  if (!discover && channels.length === 0) {
     return { ok: false, name, reason: 'no channels (fail-closed)' };
   }
 
@@ -154,6 +158,7 @@ function normalizeWatcher(raw, i) {
     ok: true,
     name,
     channels: [...new Set(channels)],
+    discover,
     trigger,
     mentionUsers: trigger.users, // convenience alias for the mention pipeline
     intents: normalizeIntents(raw),

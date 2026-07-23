@@ -10,8 +10,9 @@
       "name": "mentions",
       "enabled": true,
 
-      "//channels": "Slack channel IDs (the bot must be invited to each). ALL are scanned, in parallel, each with its own cursor. Fail-closed: empty = the watcher does not run. Friendly names (#channel) need the read-only channels:read/groups:read scope; otherwise the id is shown.",
+      "//channels": "Slack channel IDs (the bot must be invited to each) OR the string \"auto\" to auto-discover every channel the bot is a member of. ALL are scanned, in parallel, each with its own cursor. Fail-closed: empty array = the watcher does not run. Friendly names (#channel) need the read-only channels:read/groups:read scope; otherwise the id is shown.",
       "channels": ["C0123ABCD", "C0456WXYZ"],
+      "//channels-auto": "Alternatively: \"channels\": \"auto\"",
 
       "//trigger": "What makes a thread worth looking at. Only 'mention' is implemented: a thread qualifies when one of these users is @-mentioned anywhere in it (including a late reply). Required, non-empty.",
       "trigger": { "type": "mention", "users": ["U0456EFGH"] },
