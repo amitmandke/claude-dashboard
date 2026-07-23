@@ -172,23 +172,23 @@ test('normalizeTrigger: explicit mention users, legacy fallback, unsupported typ
   assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: [] } }).error, 'no users errors');
 });
 
-test('normalizeTrigger: dm type is supported and needs users', () => {
-  assert.deepEqual(wconfig.normalizeTrigger({ trigger: { type: 'dm', users: ['U1'] } }), {
-    type: 'dm', users: ['U1'],
+test('normalizeTrigger: only mention is supported; unknown types are rejected', () => {
+  assert.deepEqual(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: ['U1'] } }), {
+    type: 'mention', users: ['U1'],
   });
-  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'dm', users: [] } }).error, 'dm needs users');
+  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'dm', users: ['U1'] } }).error, 'dm no longer supported');
+  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: [] } }).error, 'mention needs users');
 });
 
-test('normalizeWatcher: dm trigger does not require channels', () => {
+test('normalizeWatcher: a mention trigger requires channels (fail-closed)', () => {
+  assert.equal(wconfig.normalizeWatcher({ name: 'm', trigger: { type: 'mention', users: ['U1'] } }, 0).ok, false);
   const n = wconfig.normalizeWatcher(
-    { name: 'dm', trigger: { type: 'dm', users: ['U1'] }, intents: [{ name: 'x', skill: 'debug' }] },
+    { name: 'm', channels: ['C1'], trigger: { type: 'mention', users: ['U1'] }, intents: [{ name: 'x', skill: 'debug' }] },
     0
   );
   assert.equal(n.ok, true);
-  assert.equal(n.trigger.type, 'dm');
-  assert.deepEqual(n.channels, []);
-  // a mention trigger still requires channels
-  assert.equal(wconfig.normalizeWatcher({ name: 'm', trigger: { type: 'mention', users: ['U1'] } }, 0).ok, false);
+  assert.equal(n.trigger.type, 'mention');
+  assert.deepEqual(n.channels, ['C1']);
 });
 
 test('normalizeIntents: keeps valid intent->skill entries, drops malformed', () => {
@@ -207,7 +207,7 @@ test('normalizeIntents: keeps valid intent->skill entries, drops malformed', () 
 
 test('normalizeWatcher: action.cwd becomes defaultCwd fallback', () => {
   const n = wconfig.normalizeWatcher(
-    { name: 'w', trigger: { type: 'dm', users: ['U1'] }, action: { cwd: '/repos/x' } },
+    { name: 'w', channels: ['C1'], trigger: { type: 'mention', users: ['U1'] }, action: { cwd: '/repos/x' } },
     0
   );
   assert.equal(n.defaultCwd, '/repos/x');
@@ -281,15 +281,16 @@ function freshState() {
 // dedicated "first run baselines" test), so staging tests must arm a cursor.
 function freshArmed() {
   freshState();
-  state.advanceCursor('w', '1');
-  state.advanceCursor('dm', '1');
+  state.advanceCursor('w', 'C1', '1');
 }
 
-test('advanceCursor: only moves forward', () => {
+test('advanceCursor: only moves forward (per channel)', () => {
   freshState();
-  assert.equal(state.advanceCursor('w', '5.0'), '5.0');
-  assert.equal(state.advanceCursor('w', '3.0'), '5.0'); // older ignored
-  assert.equal(state.advanceCursor('w', '9.0'), '9.0');
+  assert.equal(state.advanceCursor('w', 'C1', '5.0'), '5.0');
+  assert.equal(state.advanceCursor('w', 'C1', '3.0'), '5.0'); // older ignored
+  assert.equal(state.advanceCursor('w', 'C1', '9.0'), '9.0');
+  assert.equal(state.advanceCursor('w', 'C2', '2.0'), '2.0'); // a different channel is independent
+  assert.equal(state.cursorOf('w', 'C1'), '9.0');
 });
 
 test('seen: mark + isSeen keyed by channel:thread', () => {
@@ -303,8 +304,8 @@ test('seen: mark + isSeen keyed by channel:thread', () => {
 test('prune: drops aged threads/seen and caps thread count', () => {
   freshState();
   const now = 10 * 86400000;
-  state.trackThread('w', 'old', now - 5 * 86400000); // 5d old
-  state.trackThread('w', 'new', now);
+  state.trackThread('w', 'C1', 'old', now - 5 * 86400000); // 5d old
+  state.trackThread('w', 'C1', 'new', now);
   state.markSeen('w', 'C1', 'oldseen', now - 8 * 86400000); // 8d old
   state.markSeen('w', 'C1', 'newseen', now);
   const r = state.prune('w', {
@@ -313,21 +314,45 @@ test('prune: drops aged threads/seen and caps thread count', () => {
     seenTtlMs: 7 * 86400000,
     maxThreads: 50,
   });
-  const w = state.forWatcher('w');
-  assert.ok(!w.threads.old && w.threads.new, 'aged thread pruned, fresh kept');
-  assert.ok(!w.seen['C1:oldseen'] && w.seen['C1:newseen'], 'aged seen pruned');
+  const c = state.forChannel('w', 'C1');
+  assert.ok(!c.threads.old && c.threads.new, 'aged thread pruned, fresh kept');
+  assert.ok(!state.forWatcher('w').seen['C1:oldseen'] && state.forWatcher('w').seen['C1:newseen'], 'aged seen pruned');
   assert.equal(r.threadsDropped, 1);
   assert.equal(r.seenDropped, 1);
 });
 
-test('prune: caps to maxThreads by evicting least-recently-active', () => {
+test('prune: caps to maxThreads by evicting least-recently-active (per channel)', () => {
   freshState();
   const now = 1000000;
-  for (let i = 0; i < 5; i++) state.trackThread('w', `t${i}`, now + i); // t0 oldest
+  for (let i = 0; i < 5; i++) state.trackThread('w', 'C1', `t${i}`, now + i); // t0 oldest
   state.prune('w', { nowMs: now + 100, threadTtlMs: 1e12, seenTtlMs: 1e12, maxThreads: 3 });
-  const w = state.forWatcher('w');
-  assert.equal(Object.keys(w.threads).length, 3);
-  assert.ok(!w.threads.t0 && !w.threads.t1 && w.threads.t4, 'oldest evicted, newest kept');
+  const c = state.forChannel('w', 'C1');
+  assert.equal(Object.keys(c.threads).length, 3);
+  assert.ok(!c.threads.t0 && !c.threads.t1 && c.threads.t4, 'oldest evicted, newest kept');
+});
+
+test('setCursor: moves the cursor and clears that channel’s threads + seen only', () => {
+  freshState();
+  state.advanceCursor('w', 'C1', '5.0');
+  state.trackThread('w', 'C1', 't1', 1000);
+  state.markSeen('w', 'C1', 't1', 1000);
+  state.advanceCursor('w', 'C2', '9.0'); // a sibling channel must be untouched
+  state.trackThread('w', 'C2', 't2', 1000);
+
+  state.setCursor('w', 'C1', '100.0', { clearThreads: true });
+  assert.equal(state.cursorOf('w', 'C1'), '100.0');       // moved forward past the gap
+  assert.deepEqual(state.forChannel('w', 'C1').threads, {}); // C1 threads cleared
+  assert.equal(state.isSeen('w', 'C1', 't1'), false);      // C1 seen cleared
+  assert.equal(state.cursorOf('w', 'C2'), '9.0');          // C2 cursor intact
+  assert.ok(state.forChannel('w', 'C2').threads.t2, 'C2 threads intact');
+});
+
+test('channel name cache: setChannelName / channelNameOf, no create on read', () => {
+  freshState();
+  assert.equal(state.channelNameOf('w', 'C1'), null);
+  state.setChannelName('w', 'C1', '#eng-prov');
+  assert.equal(state.channelNameOf('w', 'C1'), '#eng-prov');
+  assert.equal(state.cursorOf('w', 'never'), null); // reading an unknown channel doesn't throw/create
 });
 
 // ---- classify.js -----------------------------------------------------------
@@ -408,6 +433,7 @@ function stubClient({ history = [], repliesByTs = {} }) {
       return { messages: msgs, has_more: false };
     },
     async permalink() { return { permalink: 'https://slack/x' }; },
+    async info({ channel }) { return { channel: { id: channel, name: `chan-${channel}` } }; },
   };
 }
 
@@ -431,7 +457,7 @@ test('runWatcherOnce: first run (no cursor) baselines — stages nothing, record
   });
   assert.equal(r.staged, 0, 'no backlog staged on first run');
   assert.equal(candidates.added.length, 0);
-  assert.equal(state.forWatcher('w').cursor, '100.1', 'cursor baselined to newest so later polls only see newer');
+  assert.equal(state.cursorOf('w', 'C1'), '100.1', 'cursor baselined to newest so later polls only see newer');
 });
 
 test('runWatcherOnce: a top-level mention stages one candidate with resolved cwd', async () => {
@@ -508,7 +534,7 @@ test('runWatcherOnce: no mention → nothing staged but cursor advances', async 
     client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
   });
   assert.equal(r.staged, 0);
-  assert.equal(state.forWatcher('w').cursor, '77.0');
+  assert.equal(state.cursorOf('w', 'C1'), '77.0');
 });
 
 // --- intent mode: the LLM only names an intent; skill/repo/prompt are derived ---
@@ -557,68 +583,6 @@ test('runWatcherOnce: intent mode — no matching intent is not staged', async (
   assert.equal(state.isSeen('w', 'C1', '100.1'), true);
 });
 
-// --- dm trigger: forward/DM the bot → candidate (no mention needed) ---
-
-const DM_WATCHER = {
-  name: 'dm', channels: [], everySeconds: 120,
-  trigger: { type: 'dm', users: ['U1'] },
-  intents: [{ name: 'pr-review', description: 'review a PR', skill: 'review-java' }],
-};
-
-function dmStubClient({ imChannels = [], history = [], repliesByTs = {} }) {
-  const base = stubClient({ history, repliesByTs });
-  return { ...base, async imList() { return { channels: imChannels }; } };
-}
-
-test('runWatcherOnce: a DM from the allowlisted user stages a candidate (no mention)', async () => {
-  freshArmed();
-  const candidates = fakeCandidates();
-  const client = dmStubClient({
-    imChannels: [{ id: 'D1', user: 'U1' }, { id: 'D2', user: 'U2' }],
-    history: [{ ts: '200.1', user: 'U1', text: 'please review github.com/acme/widgets/pull/4' }],
-    repliesByTs: { '200.1': [{ ts: '200.1', user: 'U1', text: 'please review github.com/acme/widgets/pull/4' }] },
-  });
-  const r = await loop.runWatcherOnce(DM_WATCHER, {
-    client, candidates,
-    classify: async () => ({ intent: 'pr-review', confidence: 0.8 }),
-    resolveRepo: (rr) => (rr === 'acme/widgets' ? '/local/widgets' : null),
-    retention: RETENTION, nowMs: 1000,
-  });
-  assert.equal(r.staged, 1);
-  assert.equal(candidates.added[0].skill, 'review-java');
-  assert.equal(candidates.added[0].cwd, '/local/widgets');
-  assert.equal(candidates.added[0].dedupeKey, 'D1:200.1'); // keyed to the resolved DM channel
-});
-
-test('runWatcherOnce: a forwarded message (content in attachments) is picked up', async () => {
-  freshArmed();
-  const candidates = fakeCandidates();
-  const fwd = { ts: '201.0', user: 'U1', text: '', attachments: [{ text: 'see github.com/acme/widgets/pull/9', fallback: 'fwd' }] };
-  const client = dmStubClient({
-    imChannels: [{ id: 'D1', user: 'U1' }],
-    history: [fwd], repliesByTs: { '201.0': [fwd] },
-  });
-  const r = await loop.runWatcherOnce(DM_WATCHER, {
-    client, candidates,
-    classify: async () => ({ intent: 'pr-review', confidence: 0.7 }),
-    resolveRepo: () => '/local/widgets', retention: RETENTION, nowMs: 1000,
-  });
-  assert.equal(r.staged, 1);
-  assert.match(candidates.added[0].prompt, /acme\/widgets#9/); // PR ref pulled from the attachment
-});
-
-test('runWatcherOnce: dm with no DM channel yet is a safe no-op', async () => {
-  freshArmed();
-  const candidates = fakeCandidates();
-  const client = dmStubClient({ imChannels: [] }); // bot never DMed
-  const r = await loop.runWatcherOnce(DM_WATCHER, {
-    client, candidates, classify: async () => ({ intent: 'pr-review', confidence: 1 }),
-    resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
-  });
-  assert.equal(r.staged, 0);
-  assert.equal(candidates.added.length, 0);
-});
-
 test('runWatcherOnce: falls back to watcher.defaultCwd when no repo resolves', async () => {
   freshArmed();
   const candidates = fakeCandidates();
@@ -643,6 +607,32 @@ test('runWatcherOnce: empty cwd when repo cannot be resolved, flagged in reason'
   assert.match(candidates.added[0].reason, /pick a repo/);
 });
 
+test('runWatcherOnce: scans all configured channels, each with its own cursor', async () => {
+  freshState();
+  // arm both channels so this is a steady-state pass (not a baseline run)
+  state.advanceCursor('w', 'C1', '1');
+  state.advanceCursor('w', 'C2', '1');
+  const candidates = fakeCandidates();
+  const byChannel = {
+    C1: [{ ts: '100.1', user: 'U9', text: 'hey <@U1> review github.com/acme/widgets/pull/1' }],
+    C2: [{ ts: '200.1', user: 'U9', text: 'and <@U1> this github.com/acme/widgets/pull/2' }],
+  };
+  const client = {
+    async history({ channel }) { return { messages: byChannel[channel] || [], has_more: false }; },
+    async replies({ ts }) { return { messages: (Object.values(byChannel).flat().find((m) => m.ts === ts) ? [] : []), has_more: false }; },
+    async permalink() { return { permalink: 'https://slack/x' }; },
+    async info({ channel }) { return { channel: { name: `chan-${channel}` } }; },
+  };
+  const r = await loop.runWatcherOnce(
+    { name: 'w', channels: ['C1', 'C2'], mentionUsers: ['U1'], everySeconds: 120 },
+    { client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000 }
+  );
+  assert.equal(r.staged, 2, 'one candidate from each channel');
+  assert.equal(state.cursorOf('w', 'C1'), '100.1');
+  assert.equal(state.cursorOf('w', 'C2'), '200.1');
+  assert.equal(state.channelNameOf('w', 'C1'), '#chan-C1'); // name resolved + cached
+});
+
 // --- watcher controls: pause/resume/run-now/stop-all/start-all ---
 
 test('watcher controls: start → pause (persists) → resume → run-now, with a fake client', async () => {
@@ -660,7 +650,6 @@ test('watcher controls: start → pause (persists) → resume → run-now, with 
     history: async () => ({ messages: [], has_more: false }),
     replies: async () => ({ messages: [], has_more: false }),
     permalink: async () => ({ permalink: '' }),
-    imList: async () => ({ channels: [] }),
   };
   loop._setTestHooks({
     buildDeps: () => ({ client: fakeClient, repoMap: { resolve: () => null, list: () => [] },
@@ -690,6 +679,17 @@ test('watcher controls: start → pause (persists) → resume → run-now, with 
   // run-now works on a live watcher
   const rn = await loop.runNow('mentions');
   assert.equal(rn.ok, true);
+
+  // set-cursor moves a channel's "last watched" and is reflected in status
+  const sc = loop.setChannelCursor('mentions', 'C1', '2026-01-02T03:04:05.000Z');
+  assert.equal(sc.ok, true);
+  assert.equal(sc.lastWatchedAt, '2026-01-02T03:04:05.000Z');
+  const chan = loop.getStatus().watchers.find((w) => w.name === 'mentions').channels.find((c) => c.id === 'C1');
+  assert.equal(chan.lastWatchedAt, '2026-01-02T03:04:05.000Z');
+  // "now" and unknown channel/watcher are handled
+  assert.equal(loop.setChannelCursor('mentions', 'C1', 'now').ok, true);
+  assert.equal(loop.setChannelCursor('mentions', 'C-nope', 'now').ok, false);
+  assert.equal(loop.setChannelCursor('ghost', 'C1', 'now').ok, false);
 
   // stop-all → paused; start-all → running
   loop.stopAll();

@@ -97,11 +97,68 @@ function newestTs(messages) {
   return max;
 }
 
-/** Find the bot<->user DM (im) channel id for the first allowlisted user. */
-async function resolveDmChannel(client, users) {
-  const res = await client.imList();
-  const im = (res.channels || []).find((c) => users.includes(c.user));
-  return im ? im.id : null;
+/**
+ * Scan ONE channel: fetch new top-level messages since the channel's cursor,
+ * track threads, re-scan tracked threads for late replies, and return the
+ * threads that qualify (a `@you` mention). Each channel owns its cursor/threads
+ * in state, so channels backfill independently and can run in parallel. On the
+ * channel's first run there is no cursor: we baseline (record the cursor, stage
+ * nothing) instead of backfilling its whole history.
+ */
+async function scanChannel({ name, channel, qualifies, label, client, nowMs, retention }) {
+  // Resolve + cache the friendly channel name (best-effort; needs channels:read/
+  // groups:read — falls back to the id until the app is reinstalled with them).
+  if (!state.channelNameOf(name, channel)) {
+    try {
+      const info = await client.info({ channel });
+      const nm = info && info.channel && info.channel.name;
+      if (nm) state.setChannelName(name, channel, `#${nm}`);
+    } catch (e) {
+      log(`ERROR watcher name=${name} channel=${channel} info: ${e.message}`);
+    }
+  }
+
+  const c = state.forChannel(name, channel);
+  const firstRun = !c.cursor;
+  const qualifiers = [];
+
+  const { messages, capped } = await fetchHistory(client, channel, c.cursor);
+  if (capped) log(`ACTION watcher name=${name} channel=${channel} note=history-capped pages=${HISTORY_MAX_PAGES}`);
+  for (const msg of messages) {
+    const threadId = match.threadIdOf(msg);
+    state.trackThread(name, channel, threadId, nowMs);
+    if (!firstRun && !match.isNoise(msg) && qualifies(msg)) {
+      qualifiers.push({ channel, threadId, why: `${label} in message` });
+    }
+  }
+  const newestTop = newestTs(messages);
+  if (newestTop) state.advanceCursor(name, channel, newestTop);
+  if (firstRun) log(`ACTION watcher name=${name} channel=${channel} note=baseline (start from now; backlog skipped)`);
+
+  // Re-scan tracked threads for late replies that mention you.
+  const cutoff = nowMs - retention.threadTtlMs;
+  const tracked = Object.entries(c.threads)
+    .filter(([, t]) => (t.lastActivity || 0) >= cutoff)
+    .sort((a, b) => (b[1].lastActivity || 0) - (a[1].lastActivity || 0))
+    .slice(0, retention.maxThreads);
+  for (const [threadId, t] of tracked) {
+    try {
+      const replies = await fetchReplies(client, channel, threadId, t.replyCursor);
+      const fresh = replies.filter((m) => state.tsGreater(m.ts, t.replyCursor));
+      if (fresh.length) {
+        state.trackThread(name, channel, threadId, nowMs);
+        const newest = newestTs(fresh);
+        if (newest) state.setReplyCursor(name, channel, threadId, newest);
+        if (!firstRun && fresh.some((m) => !match.isNoise(m) && qualifies(m))) {
+          qualifiers.push({ channel, threadId, why: `${label} in reply` });
+        }
+      }
+    } catch (e) {
+      log(`ERROR watcher name=${name} thread=${threadId} replies: ${e.message}`);
+    }
+  }
+
+  return { qualifiers, scannedThreads: tracked.length, newMessages: messages.length };
 }
 
 /**
@@ -123,70 +180,40 @@ async function runWatcherOnce(watcher, deps) {
   const name = watcher.name;
   const trigger = watcher.trigger || { type: 'mention', users: watcher.mentionUsers || [] };
   const users = trigger.users;
-  const isDm = trigger.type === 'dm';
-  const toClassify = new Map(); // threadId -> reason for logging
+  const label = 'mention';
+  const qualifies = (msg) => match.mentionsAny(match.fullText(msg), users);
 
-  // For a DM trigger the channel is the bot<->user IM (resolved live); a message
-  // qualifies simply by being from an allowlisted user (you forwarded it). For a
-  // mention trigger the channel is configured and a message qualifies by
-  // @-mentioning an allowlisted user.
-  const channel = isDm ? await resolveDmChannel(client, users) : watcher.channels[0];
-  if (!channel) {
-    log(`ACTION watcher name=${name} note=no-dm-channel (has the bot been DMed yet?)`);
+  // A message qualifies by @-mentioning an allowlisted user (anywhere in it,
+  // including a late thread reply). Every configured channel is scanned in
+  // parallel; each keeps its own cursor/threads so they backfill independently.
+  const channels = (watcher.channels || []).filter(Boolean);
+  if (channels.length === 0) {
+    log(`ACTION watcher name=${name} note=no-channel`);
     return { staged: 0, scannedThreads: 0, newMessages: 0 };
   }
-  const qualifies = isDm
-    ? (msg) => users.includes(msg.user)
-    : (msg) => match.mentionsAny(match.fullText(msg), users);
-  const label = isDm ? 'DM' : 'mention';
 
-  // 1) New top-level messages since the cursor. Track threads; flag qualifiers.
-  // On the very first run there is no cursor: we DON'T backfill the whole channel
-  // history (that would stage months-old mentions). Instead we establish a
-  // baseline — record the current cursor / thread reply-cursors and stage nothing
-  // — so only activity from now on is picked up. Downtime after that is still
-  // backfilled, because the saved cursor is what the next poll fetches since.
-  const w = state.forWatcher(name);
-  const firstRun = !w.cursor;
-  const { messages, capped } = await fetchHistory(client, channel, w.cursor);
-  if (capped) log(`ACTION watcher name=${name} note=history-capped pages=${HISTORY_MAX_PAGES}`);
-  for (const msg of messages) {
-    const threadId = match.threadIdOf(msg);
-    state.trackThread(name, threadId, nowMs);
-    if (!firstRun && !match.isNoise(msg) && qualifies(msg)) {
-      toClassify.set(threadId, `${label} in message`);
-    }
-  }
-  const newestTop = newestTs(messages);
-  if (newestTop) state.advanceCursor(name, newestTop);
-  if (firstRun) log(`ACTION watcher name=${name} note=baseline (start from now; backlog skipped)`);
+  const scans = await Promise.all(
+    channels.map((channel) =>
+      scanChannel({ name, channel, qualifies, label, client, nowMs, retention })
+    )
+  );
 
-  // 2) Re-scan tracked threads for late replies that mention you.
-  const cutoff = nowMs - retention.threadTtlMs;
-  const tracked = Object.entries(w.threads)
-    .filter(([, t]) => (t.lastActivity || 0) >= cutoff)
-    .sort((a, b) => (b[1].lastActivity || 0) - (a[1].lastActivity || 0))
-    .slice(0, retention.maxThreads);
-  for (const [threadId, t] of tracked) {
-    try {
-      const replies = await fetchReplies(client, channel, threadId, t.replyCursor);
-      const fresh = replies.filter((m) => state.tsGreater(m.ts, t.replyCursor));
-      if (fresh.length) {
-        state.trackThread(name, threadId, nowMs);
-        const newest = newestTs(fresh);
-        if (newest) state.setReplyCursor(name, threadId, newest);
-        if (!firstRun && fresh.some((m) => !match.isNoise(m) && qualifies(m))) {
-          toClassify.set(threadId, `${label} in reply`);
-        }
-      }
-    } catch (e) {
-      log(`ERROR watcher name=${name} thread=${threadId} replies: ${e.message}`);
+  // Gather qualifying threads across all channels (deduped by channel+thread),
+  // then classify + stage SERIALLY — the classifier is one-at-a-time by design.
+  const toClassify = new Map(); // "channel:thread" -> { channel, threadId, why }
+  let scannedThreads = 0;
+  let newMessages = 0;
+  for (const s of scans) {
+    scannedThreads += s.scannedThreads;
+    newMessages += s.newMessages;
+    for (const q of s.qualifiers) {
+      const k = state.seenKey(q.channel, q.threadId);
+      if (!toClassify.has(k)) toClassify.set(k, q);
     }
   }
 
-  // 3) Classify + stage each newly-qualifying thread (skip already-staged ones).
   let staged = 0;
-  for (const [threadId, why] of toClassify) {
+  for (const { channel, threadId, why } of toClassify.values()) {
     if (state.isSeen(name, channel, threadId)) continue;
     try {
       const thread = await fetchReplies(client, channel, threadId, null);
@@ -271,7 +298,7 @@ async function runWatcherOnce(watcher, deps) {
     maxThreads: retention.maxThreads,
   });
   state.save();
-  return { staged, scannedThreads: tracked.length, newMessages: messages.length };
+  return { staged, scannedThreads, newMessages };
 }
 
 // ---- live scheduling (real dependencies) ----------------------------------
@@ -439,6 +466,32 @@ async function runNow(name) {
   return { ok: true, staged: e.staged, lastError: e.lastError };
 }
 
+/**
+ * Move a channel's "last watched" cursor — the editable observability control.
+ * `at` is "now" (skip to the present, ignoring anything already handled) or a
+ * date (ISO string / epoch ms) to watch from. Clears that channel's tracked
+ * threads + seen-markers so it's a clean "watch from here". Persists immediately.
+ */
+function setChannelCursor(name, channel, at, nowMs = Date.now()) {
+  const e = runtime.get(name);
+  if (!e) return { ok: false, error: 'unknown watcher' };
+  if (!e.channels.includes(channel)) return { ok: false, error: `channel ${channel} is not watched by ${name}` };
+
+  let ms;
+  if (at === 'now' || at == null) ms = nowMs;
+  else if (typeof at === 'number') ms = at;
+  else if (/^\d+$/.test(String(at))) ms = parseInt(at, 10);
+  else {
+    ms = Date.parse(at);
+    if (Number.isNaN(ms)) return { ok: false, error: `invalid time: ${at}` };
+  }
+  const ts = (ms / 1000).toFixed(6); // Slack ts is seconds with µs precision
+  state.setCursor(name, channel, ts, { clearThreads: true });
+  state.save();
+  log(`ACTION watcher name=${name} channel=${channel} set-cursor at=${new Date(ms).toISOString()}`);
+  return { ok: true, channel, lastWatchedAt: new Date(ms).toISOString() };
+}
+
 function stopAll() {
   for (const e of runtime.values()) {
     clearTimer(e);
@@ -484,7 +537,16 @@ function getStatus() {
     repos: deps ? deps.repoMap.list().length : 0,
     watchers: [...runtime.values()].map((e) => ({
       name: e.name,
-      channels: e.channels,
+      channels: e.channels.map((id) => {
+        const cursor = state.cursorOf(e.name, id);
+        return {
+          id,
+          name: state.channelNameOf(e.name, id) || null,
+          // the cursor ts is "last watched" — everything up to here is caught up;
+          // null means it will baseline (start from now) on its first poll.
+          lastWatchedAt: cursor ? new Date(parseFloat(cursor) * 1000).toISOString() : null,
+        };
+      }),
       everySeconds: e.everySeconds,
       trigger: e.trigger,
       state: e.state,
@@ -516,6 +578,7 @@ module.exports = {
   pause,
   resume,
   runNow,
+  setChannelCursor,
   stopAll,
   startAll,
   getStatus,

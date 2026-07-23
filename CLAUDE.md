@@ -161,6 +161,18 @@ a function testable, export it (several are exported solely for tests, noted as 
   Slack's `conversations.history` omits thread replies, so late `@you` mentions are caught by
   re-scanning tracked threads' replies (bounded by retention + a thread cap). Don't "upgrade"
   to events without keeping the cursor backfill.
+- **Watcher state is keyed per channel, and all configured channels are scanned.**
+  `state.js` is `watcher → channels[channelId] → { cursor, name, threads }` (+ watcher-level
+  `seen`, already `channel:thread` keyed); each channel has its own cursor so they backfill
+  independently. `runWatcherOnce` scans every channel in `Promise.all` (parallel I/O), gathers
+  qualifying threads, then classifies **serially** (the classifier is one-at-a-time — don't
+  parallelize it). `mention` is the ONLY trigger (the `dm` trigger was removed — it needed
+  scopes the workspace won't grant). A channel's cursor is its "last watched" point: exposed
+  per channel in `getStatus`, editable via `POST /api/watchers/:name/cursor` (`setChannelCursor`
+  → `state.setCursor`, which also clears that channel's threads/seen). Channel names come from
+  `conversations.info` (needs read-only `channels:read`/`groups:read`; falls back to the id) and
+  are cached in state. The `dm`-era single-channel `channels[0]` assumption is gone — don't
+  reintroduce it.
 - **The watcher classifier only matches an intent** — its sole output is a configured intent
   name (→ skill from the `intents` map). Repo, launch prompt, and reason are derived
   deterministically in `runWatcherOnce`; don't push those decisions back into the LLM. Keep
@@ -176,6 +188,7 @@ a function testable, export it (several are exported solely for tests, noted as 
   and Stop-all/Start-all **persist** to `watchers.json` via `config.setEnabled` (flips `enabled`,
   preserving other fields) so a pause survives a restart. Tests inject `buildDeps`/`scheduleInterval`
   via `_setTestHooks` to exercise the control surface without network or real timers — keep that seam.
-- **A watcher's first run baselines** (records the cursor, stages nothing) so it never dumps a
+- **A channel's first run baselines** (records its cursor, stages nothing) so it never dumps a
   channel's backlog as candidates. Don't "fix" this into staging on first run — only a *saved*
-  cursor should drive backfill. If you reset `watchers-state.json`, the next run re-baselines.
+  cursor should drive backfill. Resetting `watchers-state.json` (or a channel's entry, or the
+  ⏱ **set → now** control) re-baselines that channel on its next run.

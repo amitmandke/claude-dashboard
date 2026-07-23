@@ -3,20 +3,28 @@
 /**
  * Watcher state — the persistent memory that makes polling reliable across an
  * intermittently-running dashboard. Stored in ~/.claude-dashboard/watchers-state.json
- * (our own dir; never ~/.claude), one entry per watcher name:
+ * (our own dir; never ~/.claude), one entry per watcher name, and WITHIN a watcher
+ * one entry per channel (each channel has its own Slack history timeline):
  *
  *   {
- *     cursor: "1718550000.000123",   // newest top-level ts processed; next poll
- *                                     //   asks Slack for history strictly after it
- *     threads: { "<thread_ts>": { replyCursor, lastActivity } },  // threads we
- *                                     //   re-scan for late replies (a `@you` that
- *                                     //   arrives deep in an existing thread)
- *     seen: { "<channel>:<thread_ts>": <ms> }   // threads already staged; dedupe
+ *     channels: {
+ *       "<channelId>": {
+ *         cursor: "1718550000.000123", // newest top-level ts processed in THIS
+ *                                       //   channel; next poll asks for history
+ *                                       //   strictly after it ("last watched")
+ *         name: "#eng-prov",            // cached friendly name (conversations.info)
+ *         threads: { "<thread_ts>": { replyCursor, lastActivity } }, // threads we
+ *                                       //   re-scan for late replies (a `@you`
+ *                                       //   that arrives deep in an existing thread)
+ *       }
+ *     },
+ *     seen: { "<channelId>:<thread_ts>": <ms> } // threads already staged; dedupe
  *   }
  *
- * The cursor is why downtime is safe: whatever was posted while the machine was
- * asleep is fetched on the next poll. `threads`/`seen` are pruned to a retention
- * window so the file stays small.
+ * The per-channel cursor is why downtime is safe AND why multiple channels can be
+ * watched independently: whatever was posted in each channel while the machine
+ * was asleep is fetched on that channel's next poll. `threads`/`seen` are pruned
+ * to a retention window so the file stays small.
  */
 
 const fs = require('fs');
@@ -27,7 +35,7 @@ const fsio = require('../../utils/fsio');
 
 const FILE = path.join(config.DATA_DIR, 'watchers-state.json');
 
-let cache = null; // { [watcherName]: { cursor, threads, seen } }
+let cache = null; // { [watcherName]: { channels: {...}, seen: {...} } }
 
 function load() {
   if (cache) return cache;
@@ -47,11 +55,20 @@ function save() {
 
 function forWatcher(name) {
   const all = load();
-  if (!all[name]) all[name] = { cursor: null, threads: {}, seen: {} };
+  if (!all[name]) all[name] = { channels: {}, seen: {} };
   const w = all[name];
-  if (!w.threads) w.threads = {};
+  if (!w.channels) w.channels = {};
   if (!w.seen) w.seen = {};
   return w;
+}
+
+/** The per-channel slice, created on first touch. */
+function forChannel(name, channelId) {
+  const w = forWatcher(name);
+  if (!w.channels[channelId]) w.channels[channelId] = { cursor: null, name: null, threads: {} };
+  const c = w.channels[channelId];
+  if (!c.threads) c.threads = {};
+  return c;
 }
 
 /** Slack timestamps ("1718.000123") compare correctly as numbers. */
@@ -59,25 +76,62 @@ function tsGreater(a, b) {
   return parseFloat(a || 0) > parseFloat(b || 0);
 }
 
-/** Advance the top-level cursor if `ts` is newer (never moves backward). */
-function advanceCursor(name, ts) {
-  const w = forWatcher(name);
-  if (ts && tsGreater(ts, w.cursor)) w.cursor = ts;
-  return w.cursor;
+/** Advance a channel's cursor if `ts` is newer (never moves backward). */
+function advanceCursor(name, channelId, ts) {
+  const c = forChannel(name, channelId);
+  if (ts && tsGreater(ts, c.cursor)) c.cursor = ts;
+  return c.cursor;
+}
+
+/** Read a channel's cursor without creating state. Returns null when unknown. */
+function cursorOf(name, channelId) {
+  const all = load();
+  const c = all[name] && all[name].channels && all[name].channels[channelId];
+  return (c && c.cursor) || null;
+}
+
+/**
+ * Explicitly set (move) a channel's cursor — the editable "last watched" point.
+ * Unlike advanceCursor this accepts any value (including moving forward past a
+ * gap you handled manually). `clearThreads` wipes that channel's tracked threads
+ * and the watcher's seen-markers for it, so it becomes a clean "watch from here".
+ */
+function setCursor(name, channelId, ts, { clearThreads = true } = {}) {
+  const c = forChannel(name, channelId);
+  c.cursor = ts || null;
+  if (clearThreads) {
+    c.threads = {};
+    const w = forWatcher(name);
+    for (const k of Object.keys(w.seen)) {
+      if (k.startsWith(`${channelId}:`)) delete w.seen[k];
+    }
+  }
+  return c.cursor;
+}
+
+/** Cache a channel's human name (from conversations.info). */
+function setChannelName(name, channelId, channelName) {
+  if (channelName) forChannel(name, channelId).name = channelName;
+}
+
+function channelNameOf(name, channelId) {
+  const all = load();
+  const c = all[name] && all[name].channels && all[name].channels[channelId];
+  return (c && c.name) || null;
 }
 
 /** Record that a thread exists / had activity, so we re-scan it for late mentions. */
-function trackThread(name, threadTs, nowMs) {
-  const w = forWatcher(name);
-  const t = w.threads[threadTs] || { replyCursor: null, lastActivity: 0 };
+function trackThread(name, channelId, threadTs, nowMs) {
+  const c = forChannel(name, channelId);
+  const t = c.threads[threadTs] || { replyCursor: null, lastActivity: 0 };
   t.lastActivity = nowMs;
-  w.threads[threadTs] = t;
+  c.threads[threadTs] = t;
   return t;
 }
 
-function setReplyCursor(name, threadTs, ts) {
-  const w = forWatcher(name);
-  const t = w.threads[threadTs];
+function setReplyCursor(name, channelId, threadTs, ts) {
+  const c = forChannel(name, channelId);
+  const t = c.threads[threadTs];
   if (t && ts && tsGreater(ts, t.replyCursor)) t.replyCursor = ts;
 }
 
@@ -92,30 +146,34 @@ function markSeen(name, channel, threadTs, nowMs) {
 }
 
 /**
- * Drop tracked threads and seen-markers older than the retention window, and cap
- * the tracked-thread count (evicting the least-recently-active) so a busy channel
- * can't grow the file without bound. Returns counts of what was pruned.
+ * Drop tracked threads (across all of the watcher's channels) and seen-markers
+ * older than the retention window, and cap the tracked-thread count per channel
+ * (evicting the least-recently-active) so a busy channel can't grow the file
+ * without bound. Returns counts of what was pruned.
  */
 function prune(name, { nowMs, threadTtlMs, seenTtlMs, maxThreads }) {
   const w = forWatcher(name);
   let threadsDropped = 0;
   let seenDropped = 0;
 
-  for (const [ts, t] of Object.entries(w.threads)) {
-    if (nowMs - (t.lastActivity || 0) > threadTtlMs) {
-      delete w.threads[ts];
-      threadsDropped++;
-    }
-  }
-  const remaining = Object.entries(w.threads);
-  if (remaining.length > maxThreads) {
-    remaining
-      .sort((a, b) => (a[1].lastActivity || 0) - (b[1].lastActivity || 0))
-      .slice(0, remaining.length - maxThreads)
-      .forEach(([ts]) => {
-        delete w.threads[ts];
+  for (const c of Object.values(w.channels)) {
+    if (!c.threads) continue;
+    for (const [ts, t] of Object.entries(c.threads)) {
+      if (nowMs - (t.lastActivity || 0) > threadTtlMs) {
+        delete c.threads[ts];
         threadsDropped++;
-      });
+      }
+    }
+    const remaining = Object.entries(c.threads);
+    if (remaining.length > maxThreads) {
+      remaining
+        .sort((a, b) => (a[1].lastActivity || 0) - (b[1].lastActivity || 0))
+        .slice(0, remaining.length - maxThreads)
+        .forEach(([ts]) => {
+          delete c.threads[ts];
+          threadsDropped++;
+        });
+    }
   }
   for (const [k, ms] of Object.entries(w.seen)) {
     if (nowMs - (ms || 0) > seenTtlMs) {
@@ -134,7 +192,12 @@ module.exports = {
   load,
   save,
   forWatcher,
+  forChannel,
   advanceCursor,
+  cursorOf,
+  setCursor,
+  setChannelName,
+  channelNameOf,
   trackThread,
   setReplyCursor,
   isSeen,

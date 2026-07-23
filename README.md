@@ -98,24 +98,24 @@ click OK; Terminal.app raw keys additionally need Accessibility permission.
 
 A watcher turns Slack threads that **@-mention you** into candidate sessions — nothing runs
 or gets posted without your click. It's **off** until you create `~/.claude-dashboard/watchers.json`
-(copy `watchers.example.json`). Two trigger types:
+(copy `watchers.example.json`). One trigger type:
 
-- **`mention`** — watch a channel the bot is invited to; a thread qualifies when it @-mentions
-  one of your configured users (anywhere, including a late reply).
-- **`dm`** — **forward or DM a message to the bot** and it becomes a candidate: no channel, no
-  @mention, nothing to wait for. Needs the app's Messages tab enabled and `im:history`/`im:read`
-  scopes.
+- **`mention`** — watch one or more channels the bot is invited to; a thread qualifies when it
+  @-mentions one of your configured users (anywhere, including a late reply). Every channel in
+  the list is scanned (in parallel), each with its own independent cursor.
 
-Either way you give it an **intent → skill map**: a small headless `claude` call matches each
+You give it an **intent → skill map**: a small headless `claude` call matches each
 qualifying thread to one of *your* named intents, and the mapped skill is what the candidate
 launches (the model only picks the intent — the repo, prompt, and reason are derived
 deterministically).
 
-It **polls** (no Slack real-time setup) with a saved cursor, so mentions posted while your
-machine was asleep are picked up on the next poll, and a late `@you` deep in a thread is still
-caught. Needs a read-only Slack **bot token** (`chat:write` is deliberately *not* requested)
-in the `SLACK_BOT_TOKEN` environment variable. See `watchers.example.json` for the full,
-commented format; `GET /api/watchers` shows status.
+It **polls** (no Slack real-time setup) with a per-channel saved cursor, so mentions posted
+while your machine was asleep are picked up on the next poll, and a late `@you` deep in a
+thread is still caught. The Watchers tab shows each channel's **"last watched"** point and lets
+you move it (skip a backlog you've handled). Needs a read-only Slack **bot token** (`chat:write`
+is deliberately *not* requested) in the `SLACK_BOT_TOKEN` environment variable; add the
+read-only `channels:read`/`groups:read` scope if you want friendly channel names instead of
+IDs. See `watchers.example.json` for the full, commented format; `GET /api/watchers` shows status.
 
 ## How it works
 

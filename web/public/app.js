@@ -916,8 +916,7 @@ function buildWatcher(w) {
   stateEl.textContent = w.state;
   stateEl.className = 'watch-state watch-state-' + w.state;
 
-  card.querySelector('.watch-channels').textContent =
-    (w.channels && w.channels.length) ? `channels: ${w.channels.join(', ')}` : 'DM';
+  renderWatchChannels(card.querySelector('.watch-channels'), w);
   card.querySelector('.watch-every').textContent = w.everySeconds ? `every ${w.everySeconds}s` : '';
   card.querySelector('.watch-lastpoll').textContent =
     w.lastPollAt ? `last poll ${fmtTime(w.lastPollAt)}` : 'not polled yet';
@@ -937,6 +936,67 @@ function buildWatcher(w) {
   resumeBtn.addEventListener('click', watchAction(w.name, 'resume'));
   runBtn.addEventListener('click', watchAction(w.name, 'run'));
   return card;
+}
+
+// Each channel shows the friendly name (or its id until a channels:read scope is
+// granted), how far it's caught up ("last watched"), and a control to move that
+// point — e.g. to "now" after you've handled a backlog manually.
+function renderWatchChannels(container, w) {
+  container.textContent = '';
+  const channels = w.channels || [];
+  if (!channels.length) {
+    container.textContent = 'no channels';
+    return;
+  }
+  for (const ch of channels) {
+    const row = document.createElement('div');
+    row.className = 'watch-chan';
+
+    const label = document.createElement('span');
+    label.className = 'watch-chan-name';
+    label.textContent = ch.name || ch.id;
+    if (!ch.name) label.title = ch.id; // raw id until names are resolvable
+
+    const when = document.createElement('span');
+    when.className = 'watch-chan-watched';
+    when.textContent = ch.lastWatchedAt
+      ? `watched through ${fmtTime(ch.lastWatchedAt)}`
+      : 'baselines on first run';
+
+    const setBtn = document.createElement('button');
+    setBtn.className = 'watch-chan-set ghost-btn';
+    setBtn.textContent = '⏱ set';
+    setBtn.title = 'Move the "last watched" point (skip backfill you have already handled)';
+    setBtn.addEventListener('click', () => setWatchCursor(w.name, ch));
+
+    row.append(label, when, setBtn);
+    container.appendChild(row);
+  }
+}
+
+async function setWatchCursor(name, ch) {
+  const current = ch.lastWatchedAt || new Date().toISOString();
+  const ans = prompt(
+    `Set "last watched" for ${ch.name || ch.id}.\n` +
+    'Enter a date/time (ISO) or "now" to skip to the present. ' +
+    'This clears tracked threads for this channel.',
+    current
+  );
+  if (ans == null) return;
+  const at = ans.trim() || 'now';
+  try {
+    const res = await fetch(`/api/watchers/${encodeURIComponent(name)}/cursor`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ channel: ch.id, at }),
+    });
+    const r = await res.json();
+    if (!res.ok || r.ok === false) throw new Error(r.error || 'failed');
+    toast(`${ch.name || ch.id}: watching from ${fmtTime(r.lastWatchedAt)}`, true);
+    await refreshWatchers();
+  } catch (err) {
+    toast('Set watch point failed: ' + err.message);
+  }
 }
 
 function renderWatchers(data) {
