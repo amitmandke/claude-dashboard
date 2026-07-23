@@ -1,3 +1,7 @@
 node_modules/
 *.log
 .DS_Store
+
+# Staging area for not-yet-built proposals; graduates into DESIGN.md when built.
+# Intentionally untracked — never commit it (see CLAUDE.md).
+docs/proposals.md
