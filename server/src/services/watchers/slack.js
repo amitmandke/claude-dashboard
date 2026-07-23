@@ -72,8 +72,6 @@ function createClient({ token, request = httpsRequest, wait = sleep } = {}) {
     history: (p) => call('conversations.history', { limit: 200, ...p }),
     /** All messages of a thread (parent + replies) newer than `oldest`. */
     replies: (p) => call('conversations.replies', { limit: 200, ...p }),
-    /** The bot's DM (im) conversations — used to find a user's DM channel. */
-    imList: (p) => call('conversations.list', { types: 'im', limit: 200, ...p }),
     /** A shareable link to a message, used as a candidate's `ref`. */
     permalink: (p) => call('chat.getPermalink', p),
     call,

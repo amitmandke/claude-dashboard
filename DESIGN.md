@@ -354,16 +354,10 @@ watcher with no channels or no trigger users does not run — there is no "watch
 Each watcher declares:
 
 - `channels` — Slack channel IDs the bot has been invited to.
-- `trigger` — what makes a thread worth looking at. Two types (the shape leaves room for
+- `trigger` — what makes a thread worth looking at. One type (the shape leaves room for
   `keyword`/`reaction` later):
   - `{ type: "mention", users:[…] }` — a channel thread qualifies when one of those users is
     @-mentioned **anywhere in it, including a late reply**.
-  - `{ type: "dm", users:[…] }` — you **forward or DM a message to the bot** and it becomes a
-    candidate; every message from an allowlisted user in the bot's DM qualifies (no mention
-    needed — sending it *is* the intent). Needs `im:history`+`im:read` scopes and the app's
-    Messages tab enabled; the DM channel is resolved at runtime (`conversations.list types=im`),
-    so no `channels` field. Forwarded content (which Slack tucks into `attachments`/`blocks`,
-    not `text`) is folded in by `match.fullText`.
 - `intents` — an **intent → skill map**: `[{ name, description, skill }]`. This is the point
   of control: the classifier's only job is to match a thread to one named intent (or none),
   and the **skill is taken from this map, not chosen by the model**. With an empty list the

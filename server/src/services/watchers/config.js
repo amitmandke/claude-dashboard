@@ -43,7 +43,7 @@ const config = require('../../config');
 
 const FILE = path.join(config.DATA_DIR, 'watchers.json');
 const MIN_POLL_SECONDS = 30;
-const SUPPORTED_TRIGGERS = ['mention', 'dm'];
+const SUPPORTED_TRIGGERS = ['mention'];
 
 /** Skill names are bare command words; empty is allowed (no skill). */
 function isValidSkillName(skill) {
@@ -102,9 +102,7 @@ function asArray(v) {
  * `{ type, users }` or `{ error }` when it can't run (fail-closed).
  *
  *  - `mention`: qualify a channel thread when one of `users` is @-mentioned.
- *  - `dm`: qualify any message the bot receives in a DM from one of `users`
- *    (you forward/DM the bot; every message you send it is intended).
- * Both require a non-empty `users` allowlist.
+ * Requires a non-empty `users` allowlist.
  */
 function normalizeTrigger(raw) {
   const t = (raw && raw.trigger) || null;
@@ -142,10 +140,8 @@ function normalizeWatcher(raw, i) {
   const trigger = normalizeTrigger(raw);
   if (trigger.error) return { ok: false, name, reason: trigger.error };
 
-  // `dm` resolves its channel (the bot<->user IM) at runtime, so channels are
-  // only required for channel-based triggers like `mention`.
   const channels = asArray(raw.channels);
-  if (trigger.type !== 'dm' && channels.length === 0) {
+  if (channels.length === 0) {
     return { ok: false, name, reason: 'no channels (fail-closed)' };
   }
 

@@ -172,23 +172,23 @@ test('normalizeTrigger: explicit mention users, legacy fallback, unsupported typ
   assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: [] } }).error, 'no users errors');
 });
 
-test('normalizeTrigger: dm type is supported and needs users', () => {
-  assert.deepEqual(wconfig.normalizeTrigger({ trigger: { type: 'dm', users: ['U1'] } }), {
-    type: 'dm', users: ['U1'],
+test('normalizeTrigger: only mention is supported; unknown types are rejected', () => {
+  assert.deepEqual(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: ['U1'] } }), {
+    type: 'mention', users: ['U1'],
   });
-  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'dm', users: [] } }).error, 'dm needs users');
+  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'dm', users: ['U1'] } }).error, 'dm no longer supported');
+  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: [] } }).error, 'mention needs users');
 });
 
-test('normalizeWatcher: dm trigger does not require channels', () => {
+test('normalizeWatcher: a mention trigger requires channels (fail-closed)', () => {
+  assert.equal(wconfig.normalizeWatcher({ name: 'm', trigger: { type: 'mention', users: ['U1'] } }, 0).ok, false);
   const n = wconfig.normalizeWatcher(
-    { name: 'dm', trigger: { type: 'dm', users: ['U1'] }, intents: [{ name: 'x', skill: 'debug' }] },
+    { name: 'm', channels: ['C1'], trigger: { type: 'mention', users: ['U1'] }, intents: [{ name: 'x', skill: 'debug' }] },
     0
   );
   assert.equal(n.ok, true);
-  assert.equal(n.trigger.type, 'dm');
-  assert.deepEqual(n.channels, []);
-  // a mention trigger still requires channels
-  assert.equal(wconfig.normalizeWatcher({ name: 'm', trigger: { type: 'mention', users: ['U1'] } }, 0).ok, false);
+  assert.equal(n.trigger.type, 'mention');
+  assert.deepEqual(n.channels, ['C1']);
 });
 
 test('normalizeIntents: keeps valid intent->skill entries, drops malformed', () => {
@@ -207,7 +207,7 @@ test('normalizeIntents: keeps valid intent->skill entries, drops malformed', () 
 
 test('normalizeWatcher: action.cwd becomes defaultCwd fallback', () => {
   const n = wconfig.normalizeWatcher(
-    { name: 'w', trigger: { type: 'dm', users: ['U1'] }, action: { cwd: '/repos/x' } },
+    { name: 'w', channels: ['C1'], trigger: { type: 'mention', users: ['U1'] }, action: { cwd: '/repos/x' } },
     0
   );
   assert.equal(n.defaultCwd, '/repos/x');
@@ -557,68 +557,6 @@ test('runWatcherOnce: intent mode — no matching intent is not staged', async (
   assert.equal(state.isSeen('w', 'C1', '100.1'), true);
 });
 
-// --- dm trigger: forward/DM the bot → candidate (no mention needed) ---
-
-const DM_WATCHER = {
-  name: 'dm', channels: [], everySeconds: 120,
-  trigger: { type: 'dm', users: ['U1'] },
-  intents: [{ name: 'pr-review', description: 'review a PR', skill: 'review-java' }],
-};
-
-function dmStubClient({ imChannels = [], history = [], repliesByTs = {} }) {
-  const base = stubClient({ history, repliesByTs });
-  return { ...base, async imList() { return { channels: imChannels }; } };
-}
-
-test('runWatcherOnce: a DM from the allowlisted user stages a candidate (no mention)', async () => {
-  freshArmed();
-  const candidates = fakeCandidates();
-  const client = dmStubClient({
-    imChannels: [{ id: 'D1', user: 'U1' }, { id: 'D2', user: 'U2' }],
-    history: [{ ts: '200.1', user: 'U1', text: 'please review github.com/acme/widgets/pull/4' }],
-    repliesByTs: { '200.1': [{ ts: '200.1', user: 'U1', text: 'please review github.com/acme/widgets/pull/4' }] },
-  });
-  const r = await loop.runWatcherOnce(DM_WATCHER, {
-    client, candidates,
-    classify: async () => ({ intent: 'pr-review', confidence: 0.8 }),
-    resolveRepo: (rr) => (rr === 'acme/widgets' ? '/local/widgets' : null),
-    retention: RETENTION, nowMs: 1000,
-  });
-  assert.equal(r.staged, 1);
-  assert.equal(candidates.added[0].skill, 'review-java');
-  assert.equal(candidates.added[0].cwd, '/local/widgets');
-  assert.equal(candidates.added[0].dedupeKey, 'D1:200.1'); // keyed to the resolved DM channel
-});
-
-test('runWatcherOnce: a forwarded message (content in attachments) is picked up', async () => {
-  freshArmed();
-  const candidates = fakeCandidates();
-  const fwd = { ts: '201.0', user: 'U1', text: '', attachments: [{ text: 'see github.com/acme/widgets/pull/9', fallback: 'fwd' }] };
-  const client = dmStubClient({
-    imChannels: [{ id: 'D1', user: 'U1' }],
-    history: [fwd], repliesByTs: { '201.0': [fwd] },
-  });
-  const r = await loop.runWatcherOnce(DM_WATCHER, {
-    client, candidates,
-    classify: async () => ({ intent: 'pr-review', confidence: 0.7 }),
-    resolveRepo: () => '/local/widgets', retention: RETENTION, nowMs: 1000,
-  });
-  assert.equal(r.staged, 1);
-  assert.match(candidates.added[0].prompt, /acme\/widgets#9/); // PR ref pulled from the attachment
-});
-
-test('runWatcherOnce: dm with no DM channel yet is a safe no-op', async () => {
-  freshArmed();
-  const candidates = fakeCandidates();
-  const client = dmStubClient({ imChannels: [] }); // bot never DMed
-  const r = await loop.runWatcherOnce(DM_WATCHER, {
-    client, candidates, classify: async () => ({ intent: 'pr-review', confidence: 1 }),
-    resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
-  });
-  assert.equal(r.staged, 0);
-  assert.equal(candidates.added.length, 0);
-});
-
 test('runWatcherOnce: falls back to watcher.defaultCwd when no repo resolves', async () => {
   freshArmed();
   const candidates = fakeCandidates();
@@ -660,7 +598,6 @@ test('watcher controls: start → pause (persists) → resume → run-now, with 
     history: async () => ({ messages: [], has_more: false }),
     replies: async () => ({ messages: [], has_more: false }),
     permalink: async () => ({ permalink: '' }),
-    imList: async () => ({ channels: [] }),
   };
   loop._setTestHooks({
     buildDeps: () => ({ client: fakeClient, repoMap: { resolve: () => null, list: () => [] },

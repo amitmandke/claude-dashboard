@@ -97,13 +97,6 @@ function newestTs(messages) {
   return max;
 }
 
-/** Find the bot<->user DM (im) channel id for the first allowlisted user. */
-async function resolveDmChannel(client, users) {
-  const res = await client.imList();
-  const im = (res.channels || []).find((c) => users.includes(c.user));
-  return im ? im.id : null;
-}
-
 /**
  * One polling pass for one watcher. Returns a small summary (counts) for
  * status/logging. All I/O goes through injected deps; pure orchestration.
@@ -123,22 +116,17 @@ async function runWatcherOnce(watcher, deps) {
   const name = watcher.name;
   const trigger = watcher.trigger || { type: 'mention', users: watcher.mentionUsers || [] };
   const users = trigger.users;
-  const isDm = trigger.type === 'dm';
   const toClassify = new Map(); // threadId -> reason for logging
 
-  // For a DM trigger the channel is the bot<->user IM (resolved live); a message
-  // qualifies simply by being from an allowlisted user (you forwarded it). For a
-  // mention trigger the channel is configured and a message qualifies by
-  // @-mentioning an allowlisted user.
-  const channel = isDm ? await resolveDmChannel(client, users) : watcher.channels[0];
+  // The channel is configured and a message qualifies by @-mentioning an
+  // allowlisted user (anywhere in the message, including a late thread reply).
+  const channel = watcher.channels[0];
   if (!channel) {
-    log(`ACTION watcher name=${name} note=no-dm-channel (has the bot been DMed yet?)`);
+    log(`ACTION watcher name=${name} note=no-channel`);
     return { staged: 0, scannedThreads: 0, newMessages: 0 };
   }
-  const qualifies = isDm
-    ? (msg) => users.includes(msg.user)
-    : (msg) => match.mentionsAny(match.fullText(msg), users);
-  const label = isDm ? 'DM' : 'mention';
+  const qualifies = (msg) => match.mentionsAny(match.fullText(msg), users);
+  const label = 'mention';
 
   // 1) New top-level messages since the cursor. Track threads; flag qualifiers.
   // On the very first run there is no cursor: we DON'T backfill the whole channel

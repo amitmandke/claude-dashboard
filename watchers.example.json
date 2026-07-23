@@ -28,19 +28,6 @@
       "//action.preferCheckout": "When a repo is checked out under more than one parent folder, prefer the one whose parent folder has this name. Repos are auto-discovered from git remotes under the codebase dir.",
       "//action.cwd": "Optional fallback target folder. A candidate's cwd is normally derived from a PR link in the message; if none resolves, this folder is used so the candidate is still launchable. Omit to leave such candidates without a cwd.",
       "action": { "preferCheckout": "myorg", "cwd": "/Users/me/codebase/scratch" }
-    },
-
-    {
-      "//": "A 'dm' watcher: forward or DM a message to the bot and it becomes a candidate — no channel and no @mention needed. Needs extra Slack scopes 'im:history' + 'im:read', and App Home -> Messages Tab enabled + 'Allow users to send messages' so the bot can receive DMs. No 'channels' field: the bot<->user DM is resolved at runtime.",
-      "name": "forward-to-me",
-      "enabled": true,
-      "trigger": { "type": "dm", "users": ["U0456EFGH"] },
-      "intents": [
-        { "name": "pr-review", "description": "review a pull request", "skill": "review-service" },
-        { "name": "bug", "description": "a bug, failure, or regression to investigate", "skill": "debug-service" }
-      ],
-      "poll": { "everySeconds": 60 },
-      "action": { "preferCheckout": "myorg" }
     }
   ]
 }
