@@ -220,30 +220,44 @@
     </section>
   </template>
 
-  <dialog id="new-session-dialog">
+  <dialog id="new-session-dialog" class="app-modal">
     <form id="new-session-form">
-      <h2>Start a new Claude session</h2>
-      <label>Project directory
-        <input id="ns-cwd" list="ns-projects" placeholder="/path/to/project" required autocomplete="off">
-        <datalist id="ns-projects"></datalist>
-      </label>
-      <label>Start with a skill <span class="hint">(optional — same as typing /skill in Claude)</span>
-        <select id="ns-skill">
-          <option value="">(none — free-form prompt)</option>
-        </select>
-        <span class="skill-desc hint" id="ns-skill-desc"></span>
-      </label>
-      <label><span id="ns-prompt-label">Initial prompt</span> <span class="hint">(optional — Enter launches, Shift+Enter for a new line)</span>
-        <textarea id="ns-prompt" rows="3" placeholder="What should this session work on?"></textarea>
-      </label>
-      <div class="dialog-actions">
-        <button type="button" id="ns-cancel" class="ghost-btn">Cancel</button>
-        <button type="submit" class="primary-btn">Launch in iTerm2</button>
+      <div class="m-head">
+        <div class="m-eyebrow"><span class="dot"></span> New session</div>
+        <h2 class="m-title">Start a Claude session</h2>
+        <button type="button" class="m-close" id="ns-close" title="Close" aria-label="Close">✕</button>
+      </div>
+      <div class="m-body">
+        <div class="row2">
+          <div>
+            <label class="lbl" for="ns-skill">Skill</label>
+            <select id="ns-skill" class="inp">
+              <option value="">(no skill)</option>
+            </select>
+            <span class="skill-desc" id="ns-skill-desc"></span>
+          </div>
+          <div>
+            <label class="lbl" for="ns-cwd">Folder <span class="lbl-sub">· recent</span></label>
+            <input id="ns-cwd" class="inp path" list="ns-projects" placeholder="/path/to/project" required autocomplete="off">
+            <datalist id="ns-projects"></datalist>
+          </div>
+        </div>
+        <div class="editor">
+          <div class="editor-bar">
+            <span class="lbl" id="ns-prompt-label">Initial prompt</span>
+            <span class="meta">⏎ launch · ⇧⏎ newline</span>
+          </div>
+          <textarea id="ns-prompt" spellcheck="false" placeholder="What should this session work on?"></textarea>
+        </div>
+      </div>
+      <div class="m-foot">
+        <button type="button" id="ns-cancel" class="btn ghost">Cancel</button>
+        <button type="submit" class="btn primary">Launch in iTerm2</button>
       </div>
     </form>
   </dialog>
 
-  <dialog id="new-candidate-dialog" class="cand-dialog">
+  <dialog id="new-candidate-dialog" class="app-modal">
     <form id="new-candidate-form">
       <div class="m-head">
         <div class="m-eyebrow"><span class="dot"></span> <span id="nc-eyebrow">New candidate</span></div>
