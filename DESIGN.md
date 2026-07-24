@@ -205,10 +205,11 @@ Each card leads with a derived **title** (a PR as `repo #123`, else the **Slack 
 `#channel`, else "Slack thread", else the first prompt line) and **link chips** (a PR link
 and/or a 💬 `#channel` link, opened in a new tab), so the "what is this" is scannable rather than
 buried. Below that: the **skill** chip, the **reason**, the **prompt** (clamped to 3 lines with a
-▾ more toggle), the directory, and the **source/producer**. **✎ Edit** flips the card body into
-an **inline form** — Skill (a dropdown of the folder's real skills), Folder, Reason, Prompt
-(textarea) — saved via the PATCH above (no `prompt()` popups; re-render pauses while editing so
-the SSE tick can't wipe it). The `ref` may be a plain URL or an object (`url` / `slackPermalink` /
+▾ more toggle), the directory, and the **source/producer**. **✎ Edit** opens the candidate
+**dialog** (the same modal as ＋ New candidate, in edit mode) — a roomy popup with a resizable
+prompt textarea, a Folder input with recent-project suggestions (`<datalist>` from `/api/projects`),
+and a Skill dropdown of the folder's real skills — and saves via the PATCH above (no `prompt()`
+popups). The `ref` may be a plain URL or an object (`url` / `slackPermalink` /
 `channelName` / `prRefs`) — the watcher attaches `channelName` at stage-time; the title/chips
 handle both. The **filter** box narrows the
 visible cards by case-insensitive substring across skill / prompt / reason / cwd / source —

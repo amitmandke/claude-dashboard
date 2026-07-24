@@ -245,8 +245,8 @@
 
   <dialog id="new-candidate-dialog">
     <form id="new-candidate-form">
-      <h2>New candidate session</h2>
-      <p class="hint">A candidate waits in the list until you launch it — nothing runs now.</p>
+      <h2 id="nc-dialog-title">New candidate session</h2>
+      <p class="hint" id="nc-dialog-hint">A candidate waits in the list until you launch it — nothing runs now.</p>
       <label>Project directory
         <input id="nc-cwd" list="nc-projects" placeholder="/path/to/project" required autocomplete="off">
         <datalist id="nc-projects"></datalist>
@@ -258,7 +258,7 @@
         <span class="skill-desc hint" id="nc-skill-desc"></span>
       </label>
       <label><span id="nc-prompt-label">Prompt</span> <span class="hint">(optional)</span>
-        <textarea id="nc-prompt" rows="3" placeholder="What should this session work on?"></textarea>
+        <textarea id="nc-prompt" rows="7" placeholder="What should this session work on?"></textarea>
       </label>
       <label>Reason <span class="hint">(why this is worth doing — shown on the card)</span>
         <input id="nc-reason" placeholder="e.g. failing CI on the auth module" autocomplete="off">
@@ -268,7 +268,7 @@
       </label>
       <div class="dialog-actions">
         <button type="button" id="nc-cancel" class="ghost-btn">Cancel</button>
-        <button type="submit" class="primary-btn">Add candidate</button>
+        <button type="submit" id="nc-submit" class="primary-btn">Add candidate</button>
       </div>
     </form>
   </dialog>
