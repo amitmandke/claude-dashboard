@@ -303,9 +303,10 @@ server/src/
 | `/api/candidates/:id/launch` | POST | spawn it (same path as `/sessions/new`), mark `launched`; 409 at the `maxConcurrent` cap |
 | `/api/candidates/:id/dismiss` · `/undismiss` | POST | mark `dismissed` / restore to `pending` |
 | `/api/candidates/:id` | DELETE | remove the item from the list now (the ✕ Clear action) |
-| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error, and per-channel `{ id, name, lastWatchedAt }` |
+| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error, and per-channel `{ id, name, watchingSince, paused }` |
 | `/api/watchers/:name/{pause,resume,run}` | POST | pause a watcher (persists `enabled:false`), resume it (persists `enabled:true`), or run one poll now |
-| `/api/watchers/:name/cursor` | POST | move a channel's "last watched" cursor: `{ channel, at }` (`at` = `"now"` or a date); clears that channel's tracked threads/seen |
+| `/api/watchers/:name/cursor` | POST | move a channel's "watch from" point: `{ channel, at }` (`at` = `"now"` or a date); clears that channel's tracked threads/seen |
+| `/api/watchers/:name/channel/{pause,resume}` | POST | pause / resume a single channel (`{ channel }`); a paused channel is skipped every poll, state kept |
 | `/api/watchers/{stop-all,start-all}` | POST | pause / resume every watcher at once |
 
 The SSE snapshot is `{sessions, candidates, caps:{maxConcurrent, maxPending}, now}` — the
@@ -408,10 +409,14 @@ structurally cannot post.
 
 **Runtime & controls.** Each configured watcher is one entry in a `Map` (state ∈
 `running`/`paused`/`error`/`disabled`), so one can be controlled without touching the others or
-the dashboard. The **Watchers tab** shows each watcher's state, last poll, staged count, and last
-error, plus **each watched channel** with its friendly name and "last watched" time, with
-**Pause / Resume / Run-now** per watcher, a per-channel **⏱ set** (move the cursor), and
-**Stop-all / Start-all** globally. Pause/Resume **persist** to `watchers.json`
+the dashboard. The **Watchers tab** leads with liveness — a pulsing dot + a bright, relative
+**`polled <ago>`** on the meta line (the honest "is it alive" signal; polling is uniform across a
+watcher's channels). Each watched channel is a row: friendly name over **`checked <ago>`**
+(recent, so it reads as live) or **`paused`**, with a per-channel **pause/resume** toggle and a
+**⏱** control that shows/edits its fixed "watch from" start point (the row never shows that
+fixed point inline — a past timestamp there kept reading as staleness). **Watch all from now**
+sets every channel's start to now at once. Watcher-level **Pause / Resume / Run-now** and
+**Stop-all / Start-all** remain. Pause/Resume **persist** to `watchers.json`
 (`config.setEnabled` flips `enabled`, preserving all other fields) so they survive a restart; a
 paused watcher comes back paused. Status rides the SSE snapshot (`watchers` key) so the tab is
 live. The **first time a channel is seen** it baselines to *now* and fetches **no** history —

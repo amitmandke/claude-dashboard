@@ -198,3 +198,19 @@ a function testable, export it (several are exported solely for tests, noted as 
   already-posted message is staged. Don't "restore" a history fetch on first run — it was the
   cause of the multi-channel poll timing out. Every later poll reads only `cursor→now` and
   advances the cursor. Resetting `watchers-state.json` (or the ⏱ **set** control) re-baselines.
+- **Two per-channel timestamps, don't conflate them** (this confused the UI repeatedly):
+  `cursor` advances every poll to the newest message read — internal, drives incremental reads,
+  NEVER shown (it wobbles per activity and reads as staleness). `since` is the fixed "watch from"
+  floor — set at baseline and by ⏱ set, never advanced; it's what `setCursor` writes alongside
+  the cursor, exposed as `watchingSince`, shown only on the ⏱ tooltip. The channel row shows
+  **"checked \<poll-age\>"** (the watcher's uniform poll recency — recent, so it reads as *live*),
+  or "paused". The one honest per-watcher liveness signal is `polled \<ago\>` on the meta line.
+- **Per-channel pause** (`state.paused`, `setChannelPaused`, `POST /api/watchers/:name/channel/
+  {pause,resume}`): `runWatcherOnce` filters paused channels out of the scan; their cursor/since
+  stay put, so resuming backfills from where they left off. This is why per-channel status now
+  earns a place on the row (active vs paused), where per-channel *liveness* alone would be
+  redundant (all channels poll together in one tick).
+- **CSS colors: only use vars that are actually defined.** `--busy-text` and `--busy-badge-bg`
+  do NOT exist (an undefined var silently falls back, rendering grey — this bit the "Running"
+  badge and poll-age). The defined green tokens are `--busy` (vivid), `--green-text` (soft),
+  `--green-badge-bg`, `--busy-glow`. Grep the `:root` block before using a color var.

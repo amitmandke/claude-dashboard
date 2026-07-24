@@ -153,7 +153,9 @@ async function scanChannel({ name, channel, qualifies, label, client, nowMs, ret
 
   const c = state.forChannel(name, channel);
   if (!c.cursor) {
-    state.advanceCursor(name, channel, (nowMs / 1000).toFixed(6));
+    const ts = (nowMs / 1000).toFixed(6);
+    state.advanceCursor(name, channel, ts);
+    state.setSince(name, channel, ts); // stable "watching from" = now
     log(`ACTION watcher name=${name} channel=${channel} note=baseline (from now; no fetch)`);
     return { qualifiers: [], scannedThreads: 0, newMessages: 0 };
   }
@@ -241,8 +243,11 @@ async function runWatcherOnce(watcher, deps) {
     return { staged: 0, scannedThreads: 0, newMessages: 0 };
   }
 
+  // a paused channel is skipped entirely — its cursor/since stay put, so resuming
+  // backfills from where it left off.
+  const active = channels.filter((channel) => !state.isPaused(name, channel));
   const scans = await Promise.all(
-    channels.map((channel) =>
+    active.map((channel) =>
       scanChannel({ name, channel, qualifies, label, client, nowMs, retention })
     )
   );
@@ -541,7 +546,19 @@ function setChannelCursor(name, channel, at, nowMs = Date.now()) {
   state.setCursor(name, channel, ts, { clearThreads: true });
   state.save();
   log(`ACTION watcher name=${name} channel=${channel} set-cursor at=${new Date(ms).toISOString()}`);
-  return { ok: true, channel, lastWatchedAt: new Date(ms).toISOString() };
+  return { ok: true, channel, watchingSince: new Date(ms).toISOString() };
+}
+
+/** Pause or resume a single channel within a watcher (persisted in state). */
+function setChannelPaused(name, channel, paused) {
+  const e = runtime.get(name);
+  if (!e) return { ok: false, error: 'unknown watcher' };
+  const watched = new Set([...(e.channels || []), ...state.channelsOf(name)]);
+  if (!watched.has(channel)) return { ok: false, error: `channel ${channel} is not watched by ${name}` };
+  state.setPaused(name, channel, paused);
+  state.save();
+  log(`ACTION watcher name=${name} channel=${channel} ${paused ? 'paused' : 'resumed'}`);
+  return { ok: true, channel, paused: !!paused };
 }
 
 function stopAll() {
@@ -592,13 +609,14 @@ function getStatus() {
       discover: !!e.discover,
       // explicit config channels plus any actually watched (discovered) ones
       channels: [...new Set([...(e.channels || []), ...state.channelsOf(e.name)])].map((id) => {
-        const cursor = state.cursorOf(e.name, id);
+        const since = state.sinceOf(e.name, id);
         return {
           id,
           name: state.channelNameOf(e.name, id) || null,
-          // the cursor ts is "last watched" — everything up to here is caught up;
-          // null means it will baseline (start from now) on its first poll.
-          lastWatchedAt: cursor ? new Date(parseFloat(cursor) * 1000).toISOString() : null,
+          // the stable "watching from" point (not the advancing cursor); null
+          // means it will baseline (start from now) on its first poll.
+          watchingSince: since ? new Date(parseFloat(since) * 1000).toISOString() : null,
+          paused: state.isPaused(e.name, id),
         };
       }),
       everySeconds: e.everySeconds,
@@ -633,6 +651,7 @@ module.exports = {
   resume,
   runNow,
   setChannelCursor,
+  setChannelPaused,
   stopAll,
   startAll,
   getStatus,

@@ -477,6 +477,30 @@ test('runWatcherOnce: first run (no cursor) baselines to NOW — stages nothing,
   assert.equal(state.cursorOf('w', 'C1'), '1700000000.000000', 'cursor baselined to NOW, not the newest message');
 });
 
+test('watching-since is fixed at baseline while the cursor advances with new messages', async () => {
+  freshState();
+  const candidates = fakeCandidates();
+  const msgs = [];
+  const client = {
+    async history({ oldest }) {
+      return { messages: oldest ? msgs.filter((m) => parseFloat(m.ts) > parseFloat(oldest)) : msgs, has_more: false };
+    },
+    async replies() { return { messages: [], has_more: false }; },
+    async permalink() { return { permalink: '' }; },
+    async info({ channel }) { return { channel: { name: `c-${channel}` } }; },
+  };
+  const W = { name: 'w', channels: ['C1'], mentionUsers: ['U1'], everySeconds: 120 };
+  // first sight → baseline sets BOTH since and cursor to now
+  await loop.runWatcherOnce(W, { client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1700000000000 });
+  assert.equal(state.sinceOf('w', 'C1'), '1700000000.000000');
+  assert.equal(state.cursorOf('w', 'C1'), '1700000000.000000');
+  // a later message advances the cursor but the displayed "since" stays put
+  msgs.push({ ts: '1700000500.0', text: 'hi <@U1>' });
+  await loop.runWatcherOnce(W, { client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1700000600000 });
+  assert.equal(state.cursorOf('w', 'C1'), '1700000500.0', 'cursor advances to the new message');
+  assert.equal(state.sinceOf('w', 'C1'), '1700000000.000000', 'watching-since is unchanged');
+});
+
 test('runWatcherOnce: a top-level mention stages one candidate with resolved cwd', async () => {
   freshArmed();
   const candidates = fakeCandidates();
@@ -709,6 +733,32 @@ test('runWatcherOnce: discover falls back to public-only when groups:read is mis
   assert.deepEqual(state.channelsOf('w'), ['C1']); // still discovered the public channel
 });
 
+test('runWatcherOnce: a paused channel is skipped (others still scanned)', async () => {
+  freshState();
+  ['C1', 'C2'].forEach((c) => { state.advanceCursor('w', c, '1'); state.setSince('w', c, '1'); });
+  state.setPaused('w', 'C2', true);
+  const candidates = fakeCandidates();
+  const byChannel = {
+    C1: [{ ts: '100.1', user: 'U9', text: '<@U1> review github.com/acme/widgets/pull/1' }],
+    C2: [{ ts: '200.1', user: 'U9', text: '<@U1> review github.com/acme/widgets/pull/2' }],
+  };
+  const client = {
+    async history({ channel, oldest }) {
+      const all = byChannel[channel] || [];
+      return { messages: oldest ? all.filter((m) => parseFloat(m.ts) > parseFloat(oldest)) : all, has_more: false };
+    },
+    async replies() { return { messages: [], has_more: false }; },
+    async permalink() { return { permalink: '' }; },
+    async info({ channel }) { return { channel: { name: channel } }; },
+  };
+  const r = await loop.runWatcherOnce(
+    { name: 'w', channels: ['C1', 'C2'], mentionUsers: ['U1'], everySeconds: 120 },
+    { client, candidates, classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000 }
+  );
+  assert.equal(r.staged, 1, 'only the active channel staged');
+  assert.equal(candidates.added[0].dedupeKey, 'C1:100.1');
+});
+
 // --- watcher controls: pause/resume/run-now/stop-all/start-all ---
 
 test('watcher controls: start → pause (persists) → resume → run-now, with a fake client', async () => {
@@ -756,16 +806,24 @@ test('watcher controls: start → pause (persists) → resume → run-now, with 
   const rn = await loop.runNow('mentions');
   assert.equal(rn.ok, true);
 
-  // set-cursor moves a channel's "last watched" and is reflected in status
+  // set-cursor moves a channel's "watching since" and is reflected in status
   const sc = loop.setChannelCursor('mentions', 'C1', '2026-01-02T03:04:05.000Z');
   assert.equal(sc.ok, true);
-  assert.equal(sc.lastWatchedAt, '2026-01-02T03:04:05.000Z');
+  assert.equal(sc.watchingSince, '2026-01-02T03:04:05.000Z');
   const chan = loop.getStatus().watchers.find((w) => w.name === 'mentions').channels.find((c) => c.id === 'C1');
-  assert.equal(chan.lastWatchedAt, '2026-01-02T03:04:05.000Z');
+  assert.equal(chan.watchingSince, '2026-01-02T03:04:05.000Z');
   // "now" and unknown channel/watcher are handled
   assert.equal(loop.setChannelCursor('mentions', 'C1', 'now').ok, true);
   assert.equal(loop.setChannelCursor('mentions', 'C-nope', 'now').ok, false);
   assert.equal(loop.setChannelCursor('ghost', 'C1', 'now').ok, false);
+
+  // per-channel pause persists into status; unknown channel/watcher rejected
+  assert.equal(loop.setChannelPaused('mentions', 'C1', true).ok, true);
+  const c1 = loop.getStatus().watchers.find((w) => w.name === 'mentions').channels.find((c) => c.id === 'C1');
+  assert.equal(c1.paused, true);
+  assert.equal(loop.setChannelPaused('mentions', 'C1', false).ok, true);
+  assert.equal(loop.setChannelPaused('mentions', 'C-nope', true).ok, false);
+  assert.equal(loop.setChannelPaused('ghost', 'C1', true).ok, false);
 
   // stop-all → paused; start-all → running
   loop.stopAll();
