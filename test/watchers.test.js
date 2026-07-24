@@ -520,7 +520,8 @@ test('runWatcherOnce: a top-level mention stages one candidate with resolved cwd
   assert.equal(c.source, 'slack');
   assert.equal(c.producer, 'watcher');
   assert.equal(c.dedupeKey, 'C1:100.1');
-  assert.equal(c.ref, 'https://slack/x');
+  assert.equal(c.ref.slackPermalink, 'https://slack/x');
+  assert.equal(c.ref.channelName, '#chan-C1');
   assert.equal(c.priority, 2); // confidence 0.9
 });
 
@@ -552,6 +553,7 @@ test('runWatcherOnce: catches a mention that arrives as a late thread reply', as
   });
   assert.equal(r.staged, 1);
   assert.equal(candidates.added[0].dedupeKey, 'C1:50.0');
+  assert.equal(candidates.added[0].ref.channelName, '#chan-C1'); // channel name carried for the card
 });
 
 test('runWatcherOnce: not-actionable thread is marked seen but not staged', async () => {

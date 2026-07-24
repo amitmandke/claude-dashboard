@@ -298,6 +298,8 @@ async function handle(req, res, url) {
         const patch = {};
         if (typeof body.prompt === 'string') patch.prompt = body.prompt;
         if (typeof body.skill === 'string') patch.skill = body.skill;
+        if (typeof body.cwd === 'string') patch.cwd = body.cwd;
+        if (typeof body.reason === 'string') patch.reason = body.reason;
         if (body.priority !== undefined) patch.priority = Number(body.priority);
         if (!candidates.update(id, patch)) return json(res, 404, { error: 'candidate not found' }), true;
         json(res, 200, { ok: true });
