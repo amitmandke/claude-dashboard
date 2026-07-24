@@ -45,6 +45,26 @@ To run it as a proper background service (starts at login, restarts on crash):
 ./scripts/uninstall-launchd.sh   # stops and removes it
 ```
 
+### Dev vs. deployed (keep edits out of the running app)
+
+So live edits don't disturb the running dashboard, run the launchd agent from a **separate
+deployed checkout** and keep your working tree for development:
+
+```bash
+# one-time: a deployed copy the agent runs from
+git clone <this-repo> ~/.claude-dashboard/app
+cd ~/.claude-dashboard/app && ./scripts/install-launchd.sh   # agent now runs from here
+
+# ship merged main to the running app (run from the deployed copy):
+~/.claude-dashboard/app/scripts/deploy.sh                    # fast-forwards to origin/main + restarts
+
+# develop without touching the running app — a throwaway instance on another port:
+PORT=7788 node server/src/index.js                           # preview at http://localhost:7788
+```
+
+Only `deploy.sh` (merged `main`) reaches the live dashboard; your working-tree edits stay on
+the dev port until you deploy. Both instances share the same data dir (`~/.claude-dashboard/`).
+
 Requires Node.js ≥ 18 (already present — Claude Code runs on it). Interactive features
 need a supported terminal (see the matrix above). The first send/focus/launch triggers a
 one-time macOS automation permission dialog ("…wants to control iTerm2/Terminal") —
