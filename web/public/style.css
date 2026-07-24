@@ -661,73 +661,73 @@ dialog input:focus, dialog textarea:focus { border-color: var(--accent); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
 
 /* --- candidate add/edit dialog: a designed modal, not the plain form --- */
-.cand-dialog {
+.app-modal {
   padding: 0;
   width: min(600px, calc(100vw - 40px));
   border-radius: 16px;
   overflow: hidden;
   box-shadow: 0 24px 60px -20px #0009;
 }
-.cand-dialog form { display: block; }
-.cand-dialog .m-head { position: relative; padding: 16px 18px 13px; }
-.cand-dialog .m-head::after {
+.app-modal form { display: block; }
+.app-modal .m-head { position: relative; padding: 16px 18px 13px; }
+.app-modal .m-head::after {
   content: ""; position: absolute; left: 18px; right: 18px; bottom: 0; height: 1px;
   background: linear-gradient(90deg, color-mix(in srgb, var(--accent) 55%, transparent), var(--card-edge) 40%);
 }
-.cand-dialog .m-eyebrow { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--dim); }
-.cand-dialog .m-eyebrow .dot { width: 7px; height: 7px; border-radius: 2px; background: var(--accent); transform: rotate(45deg); }
-.cand-dialog .m-title { margin: 8px 0 9px; font-size: 18px; font-weight: 680; letter-spacing: -.01em; color: var(--text); }
-.cand-dialog .m-ident { display: flex; gap: 7px; flex-wrap: wrap; }
-.cand-dialog .m-ident .chip {
+.app-modal .m-eyebrow { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: .09em; text-transform: uppercase; color: var(--dim); }
+.app-modal .m-eyebrow .dot { width: 7px; height: 7px; border-radius: 2px; background: var(--accent); transform: rotate(45deg); }
+.app-modal .m-title { margin: 8px 0 9px; font-size: 18px; font-weight: 680; letter-spacing: -.01em; color: var(--text); }
+.app-modal .m-ident { display: flex; gap: 7px; flex-wrap: wrap; }
+.app-modal .m-ident .chip {
   font-size: 11px; border-radius: 6px; padding: 2px 8px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
   background: var(--inset); border: 1px solid var(--card-edge); color: var(--tool);
 }
-.cand-dialog .m-ident .chip.prio { color: var(--amber-text); background: var(--amber-badge-bg); border-color: transparent; font-weight: 600; }
-.cand-dialog .m-close {
+.app-modal .m-ident .chip.prio { color: var(--amber-text); background: var(--amber-badge-bg); border-color: transparent; font-weight: 600; }
+.app-modal .m-close {
   position: absolute; top: 14px; right: 14px; width: 30px; height: 30px; border-radius: 8px;
   border: 1px solid transparent; background: none; color: var(--dim); cursor: pointer; font-size: 15px;
 }
-.cand-dialog .m-close:hover { background: var(--neutral-btn); color: var(--text); }
+.app-modal .m-close:hover { background: var(--neutral-btn); color: var(--text); }
 
-.cand-dialog .m-body { padding: 16px 18px 6px; display: flex; flex-direction: column; gap: 15px; }
-.cand-dialog .lbl { display: block; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; font-weight: 600; }
-.cand-dialog .lbl-sub { color: var(--feed-time); text-transform: none; letter-spacing: 0; font-weight: 400; }
-.cand-dialog .row2 { display: grid; grid-template-columns: 1fr 1.35fr; gap: 12px; }
-.cand-dialog .reason-row { grid-template-columns: 1fr 96px; }
-.cand-dialog .skill-desc { display: block; margin-top: 5px; font-size: 11px; line-height: 1.4; color: var(--dim); max-height: 3em; overflow: hidden; }
+.app-modal .m-body { padding: 16px 18px 6px; display: flex; flex-direction: column; gap: 15px; }
+.app-modal .lbl { display: block; font-size: 10.5px; letter-spacing: .07em; text-transform: uppercase; color: var(--dim); margin-bottom: 6px; font-weight: 600; }
+.app-modal .lbl-sub { color: var(--feed-time); text-transform: none; letter-spacing: 0; font-weight: 400; }
+.app-modal .row2 { display: grid; grid-template-columns: 1fr 1.35fr; gap: 12px; }
+.app-modal .reason-row { grid-template-columns: 1fr 96px; }
+.app-modal .skill-desc { display: block; margin-top: 5px; font-size: 11px; line-height: 1.4; color: var(--dim); max-height: 3em; overflow: hidden; }
 /* inputs — override the generic dialog rules (higher specificity) */
-.cand-dialog .inp {
+.app-modal .inp {
   display: block; width: 100%; margin: 0; background: var(--inset); border: 1px solid var(--card-edge);
   color: var(--text); border-radius: 9px; padding: 9px 11px; font-size: 13px; font-family: inherit;
   transition: border-color .12s, box-shadow .12s;
 }
-.cand-dialog .inp:focus { outline: none; border-color: var(--accent); background: var(--card); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
-.cand-dialog select.inp, .cand-dialog .inp.path { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
-.cand-dialog select.inp {
+.app-modal .inp:focus { outline: none; border-color: var(--accent); background: var(--card); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.app-modal select.inp, .app-modal .inp.path { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+.app-modal select.inp {
   cursor: pointer; appearance: none;
   background-image: linear-gradient(45deg, transparent 50%, var(--dim) 50%), linear-gradient(135deg, var(--dim) 50%, transparent 50%);
   background-position: calc(100% - 16px) 16px, calc(100% - 11px) 16px; background-size: 5px 5px; background-repeat: no-repeat;
 }
 
 /* the prompt "editor panel" — the payload gets the room */
-.cand-dialog .editor { border: 1px solid var(--card-edge); border-radius: 11px; overflow: hidden; background: var(--inset); transition: border-color .12s, box-shadow .12s; }
-.cand-dialog .editor:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
-.cand-dialog .editor-bar { display: flex; align-items: center; justify-content: space-between; padding: 7px 11px; border-bottom: 1px solid var(--card-edge); background: color-mix(in srgb, var(--text) 3%, transparent); }
-.cand-dialog .editor-bar .lbl { margin: 0; }
-.cand-dialog .editor-bar .meta { font-size: 11px; color: var(--feed-time); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
-.cand-dialog .editor textarea {
+.app-modal .editor { border: 1px solid var(--card-edge); border-radius: 11px; overflow: hidden; background: var(--inset); transition: border-color .12s, box-shadow .12s; }
+.app-modal .editor:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.app-modal .editor-bar { display: flex; align-items: center; justify-content: space-between; padding: 7px 11px; border-bottom: 1px solid var(--card-edge); background: color-mix(in srgb, var(--text) 3%, transparent); }
+.app-modal .editor-bar .lbl { margin: 0; }
+.app-modal .editor-bar .meta { font-size: 11px; color: var(--feed-time); font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+.app-modal .editor textarea {
   display: block; width: 100%; margin: 0; border: 0; background: none; color: var(--text-soft);
   font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 1.6;
   padding: 11px; min-height: 172px; resize: vertical; outline: none;
 }
 
-.cand-dialog .m-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px 16px; border-top: 1px solid var(--card-edge); }
-.cand-dialog .btn { border: 1px solid var(--card-edge); background: var(--neutral-btn); color: var(--text-soft); border-radius: 9px; padding: 8px 15px; font-size: 13px; cursor: pointer; font-family: inherit; }
-.cand-dialog .btn:hover { background: var(--neutral-btn-hover); }
-.cand-dialog .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--accent) 90%, transparent); }
-.cand-dialog .btn.primary:hover { filter: brightness(1.06); }
-.cand-dialog .btn.ghost { background: none; border-color: transparent; color: var(--dim); }
-.cand-dialog .btn.ghost:hover { color: var(--text); background: var(--neutral-btn); }
+.app-modal .m-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 18px 16px; border-top: 1px solid var(--card-edge); }
+.app-modal .btn { border: 1px solid var(--card-edge); background: var(--neutral-btn); color: var(--text-soft); border-radius: 9px; padding: 8px 15px; font-size: 13px; cursor: pointer; font-family: inherit; }
+.app-modal .btn:hover { background: var(--neutral-btn-hover); }
+.app-modal .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); font-weight: 600; box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--accent) 90%, transparent); }
+.app-modal .btn.primary:hover { filter: brightness(1.06); }
+.app-modal .btn.ghost { background: none; border-color: transparent; color: var(--dim); }
+.app-modal .btn.ghost:hover { color: var(--text); background: var(--neutral-btn); }
 
 /* --- full-reply popup (markdown-rendered, scrollable) --- */
 

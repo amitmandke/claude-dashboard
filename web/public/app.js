@@ -568,6 +568,7 @@ document.getElementById('new-session-btn').addEventListener('click', async () =>
 });
 
 document.getElementById('ns-cancel').addEventListener('click', () => dialog.close());
+document.getElementById('ns-close').addEventListener('click', () => dialog.close());
 
 document.getElementById('new-session-form').addEventListener('submit', (e) => {
   e.preventDefault();
