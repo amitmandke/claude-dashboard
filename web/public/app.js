@@ -837,8 +837,19 @@ let ncEditId = null;
 const ncReason = document.getElementById('nc-reason');
 const ncPriority = document.getElementById('nc-priority');
 const ncTitle = document.getElementById('nc-dialog-title');
-const ncHint = document.getElementById('nc-dialog-hint');
+const ncEyebrow = document.getElementById('nc-eyebrow');
+const ncIdent = document.getElementById('nc-ident');
+const ncPromptMeta = document.getElementById('nc-prompt-meta');
 const ncSubmit = document.getElementById('nc-submit');
+
+// live line/char count in the prompt editor bar
+function ncUpdatePromptMeta() {
+  const v = ncPrompt.value;
+  if (!v) { ncPromptMeta.textContent = ''; return; }
+  const lines = v.split('\n').length;
+  ncPromptMeta.textContent = `${lines} line${lines === 1 ? '' : 's'} · ${v.length} chars`;
+}
+ncPrompt.addEventListener('input', ncUpdatePromptMeta);
 
 async function ncLoadProjects() {
   try {
@@ -849,11 +860,13 @@ async function ncLoadProjects() {
 
 document.getElementById('new-candidate-btn').addEventListener('click', async () => {
   ncEditId = null;
+  ncEyebrow.textContent = 'New candidate';
   ncTitle.textContent = 'New candidate session';
-  ncHint.textContent = 'A candidate waits in the list until you launch it — nothing runs now.';
+  ncIdent.hidden = true; ncIdent.textContent = '';
   ncSubmit.textContent = 'Add candidate';
   ncCwd.required = true; // a new candidate needs a folder to launch into
   ncCwd.value = ''; ncPrompt.value = ''; ncSkill.value = ''; ncReason.value = ''; ncPriority.value = '0';
+  ncUpdatePromptMeta();
   await ncLoadProjects();
   ncLoadSkills();
   ncUpdateSkillUi();
@@ -861,18 +874,24 @@ document.getElementById('new-candidate-btn').addEventListener('click', async () 
   ncCwd.focus();
 });
 
-// Open the same dialog to EDIT an existing candidate — a roomy popup for the
-// prompt, with folder suggestions, instead of a cramped in-card form.
+// Open the same dialog to EDIT an existing candidate — a roomy popup with the
+// prompt as the hero, folder suggestions, and the candidate's identity up top.
 async function openCandEdit(c) {
   ncEditId = c.id;
-  ncTitle.textContent = 'Edit candidate';
-  ncHint.textContent = 'Change the plan before you launch it.';
+  ncEyebrow.textContent = 'Edit candidate';
+  ncTitle.textContent = candTitle(c);
+  ncIdent.textContent = '';
+  const ref = c.ref || {};
+  const chan = ref.channelName || (ref.slackPermalink ? 'Slack thread' : '');
+  if (chan) { const s = document.createElement('span'); s.className = 'chip mono'; s.textContent = `💬 ${chan}`; ncIdent.appendChild(s); }
+  ncIdent.hidden = ncIdent.children.length === 0;
   ncSubmit.textContent = 'Save changes';
   ncCwd.required = false; // editing may leave the folder empty (set it later)
   ncCwd.value = c.action.cwd || '';
   ncReason.value = c.reason || '';
   ncPriority.value = c.priority || 0;
   ncPrompt.value = c.action.prompt || '';
+  ncUpdatePromptMeta();
   await ncLoadProjects();
   await ncLoadSkills();
   // select the current skill even if it isn't in the folder's list
@@ -886,6 +905,7 @@ async function openCandEdit(c) {
 }
 
 document.getElementById('nc-cancel').addEventListener('click', () => ncDialog.close());
+document.getElementById('nc-close').addEventListener('click', () => ncDialog.close());
 
 document.getElementById('new-candidate-form').addEventListener('submit', (e) => {
   e.preventDefault();

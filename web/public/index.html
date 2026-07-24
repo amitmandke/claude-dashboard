@@ -243,32 +243,50 @@
     </form>
   </dialog>
 
-  <dialog id="new-candidate-dialog">
+  <dialog id="new-candidate-dialog" class="cand-dialog">
     <form id="new-candidate-form">
-      <h2 id="nc-dialog-title">New candidate session</h2>
-      <p class="hint" id="nc-dialog-hint">A candidate waits in the list until you launch it — nothing runs now.</p>
-      <label>Project directory
-        <input id="nc-cwd" list="nc-projects" placeholder="/path/to/project" required autocomplete="off">
-        <datalist id="nc-projects"></datalist>
-      </label>
-      <label>Skill <span class="hint">(optional — same as typing /skill in Claude)</span>
-        <select id="nc-skill">
-          <option value="">(none — free-form prompt)</option>
-        </select>
-        <span class="skill-desc hint" id="nc-skill-desc"></span>
-      </label>
-      <label><span id="nc-prompt-label">Prompt</span> <span class="hint">(optional)</span>
-        <textarea id="nc-prompt" rows="7" placeholder="What should this session work on?"></textarea>
-      </label>
-      <label>Reason <span class="hint">(why this is worth doing — shown on the card)</span>
-        <input id="nc-reason" placeholder="e.g. failing CI on the auth module" autocomplete="off">
-      </label>
-      <label>Priority <span class="hint">(higher launches first)</span>
-        <input id="nc-priority" type="number" value="0" step="1">
-      </label>
-      <div class="dialog-actions">
-        <button type="button" id="nc-cancel" class="ghost-btn">Cancel</button>
-        <button type="submit" id="nc-submit" class="primary-btn">Add candidate</button>
+      <div class="m-head">
+        <div class="m-eyebrow"><span class="dot"></span> <span id="nc-eyebrow">New candidate</span></div>
+        <h2 class="m-title" id="nc-dialog-title">New candidate session</h2>
+        <div class="m-ident" id="nc-ident" hidden></div>
+        <button type="button" class="m-close" id="nc-close" title="Close" aria-label="Close">✕</button>
+      </div>
+      <div class="m-body">
+        <div class="row2">
+          <div>
+            <label class="lbl" for="nc-skill">Skill</label>
+            <select id="nc-skill" class="inp">
+              <option value="">(no skill)</option>
+            </select>
+            <span class="skill-desc" id="nc-skill-desc"></span>
+          </div>
+          <div>
+            <label class="lbl" for="nc-cwd">Folder <span class="lbl-sub">· recent</span></label>
+            <input id="nc-cwd" class="inp path" list="nc-projects" placeholder="/path/to/project" required autocomplete="off">
+            <datalist id="nc-projects"></datalist>
+          </div>
+        </div>
+        <div class="row2 reason-row">
+          <div>
+            <label class="lbl" for="nc-reason">Reason</label>
+            <input id="nc-reason" class="inp" placeholder="why this is worth doing" autocomplete="off">
+          </div>
+          <div>
+            <label class="lbl" for="nc-priority">Priority</label>
+            <input id="nc-priority" class="inp" type="number" value="0" step="1">
+          </div>
+        </div>
+        <div class="editor">
+          <div class="editor-bar">
+            <span class="lbl" id="nc-prompt-label">Prompt</span>
+            <span class="meta" id="nc-prompt-meta"></span>
+          </div>
+          <textarea id="nc-prompt" spellcheck="false" placeholder="What should this session work on?"></textarea>
+        </div>
+      </div>
+      <div class="m-foot">
+        <button type="button" id="nc-cancel" class="btn ghost">Cancel</button>
+        <button type="submit" id="nc-submit" class="btn primary">Add candidate</button>
       </div>
     </form>
   </dialog>
