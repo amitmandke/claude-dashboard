@@ -173,6 +173,11 @@ a function testable, export it (several are exported solely for tests, noted as 
   `conversations.info` (needs read-only `channels:read`/`groups:read`; falls back to the id) and
   are cached in state. The `dm`-era single-channel `channels[0]` assumption is gone — don't
   reintroduce it.
+- **`channels: "auto"` auto-discovers** every channel the bot is a member of (`discoverChannels`
+  → `users.conversations`, paginated). It requests public+private and **degrades to public-only**
+  on `missing_scope` (no `groups:read`) — don't drop the degrade, most bots are public-only.
+  Discovered channels flow into the same per-channel scan; `getStatus`/`setChannelCursor` union
+  config channels with `state.channelsOf(name)` so discovered ones show up and are editable.
 - **The watcher classifier only matches an intent** — its sole output is a configured intent
   name (→ skill from the `intents` map). Repo, launch prompt, and reason are derived
   deterministically in `runWatcherOnce`; don't push those decisions back into the LLM. Keep
@@ -188,7 +193,24 @@ a function testable, export it (several are exported solely for tests, noted as 
   and Stop-all/Start-all **persist** to `watchers.json` via `config.setEnabled` (flips `enabled`,
   preserving other fields) so a pause survives a restart. Tests inject `buildDeps`/`scheduleInterval`
   via `_setTestHooks` to exercise the control surface without network or real timers — keep that seam.
-- **A channel's first run baselines** (records its cursor, stages nothing) so it never dumps a
-  channel's backlog as candidates. Don't "fix" this into staging on first run — only a *saved*
-  cursor should drive backfill. Resetting `watchers-state.json` (or a channel's entry, or the
-  ⏱ **set → now** control) re-baselines that channel on its next run.
+- **A channel's first sight baselines to NOW and fetches nothing** (`scanChannel` early-returns
+  when there's no cursor). This keeps discovery instant across many channels and guarantees no
+  already-posted message is staged. Don't "restore" a history fetch on first run — it was the
+  cause of the multi-channel poll timing out. Every later poll reads only `cursor→now` and
+  advances the cursor. Resetting `watchers-state.json` (or the ⏱ **set** control) re-baselines.
+- **Two per-channel timestamps, don't conflate them** (this confused the UI repeatedly):
+  `cursor` advances every poll to the newest message read — internal, drives incremental reads,
+  NEVER shown (it wobbles per activity and reads as staleness). `since` is the fixed "watch from"
+  floor — set at baseline and by ⏱ set, never advanced; it's what `setCursor` writes alongside
+  the cursor, exposed as `watchingSince`, shown only on the ⏱ tooltip. The channel row shows
+  **"checked \<poll-age\>"** (the watcher's uniform poll recency — recent, so it reads as *live*),
+  or "paused". The one honest per-watcher liveness signal is `polled \<ago\>` on the meta line.
+- **Per-channel pause** (`state.paused`, `setChannelPaused`, `POST /api/watchers/:name/channel/
+  {pause,resume}`): `runWatcherOnce` filters paused channels out of the scan; their cursor/since
+  stay put, so resuming backfills from where they left off. This is why per-channel status now
+  earns a place on the row (active vs paused), where per-channel *liveness* alone would be
+  redundant (all channels poll together in one tick).
+- **CSS colors: only use vars that are actually defined.** `--busy-text` and `--busy-badge-bg`
+  do NOT exist (an undefined var silently falls back, rendering grey — this bit the "Running"
+  badge and poll-age). The defined green tokens are `--busy` (vivid), `--green-text` (soft),
+  `--green-badge-bg`, `--busy-glow`. Grep the `:root` block before using a color var.

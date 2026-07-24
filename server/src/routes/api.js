@@ -242,6 +242,15 @@ async function handle(req, res, url) {
     const r = watchers.setChannelCursor(name, body.channel, body.at != null ? body.at : 'now');
     return json(res, r && r.ok === false ? 400 : 200, r), true;
   }
+  // pause/resume a single channel within a watcher
+  const chpMatch = url.pathname.match(/^\/api\/watchers\/([^/]+)\/channel\/(pause|resume)$/);
+  if (chpMatch && req.method === 'POST') {
+    const name = decodeURIComponent(chpMatch[1]);
+    const body = await readBody(req);
+    if (!body || !body.channel) return json(res, 400, { error: 'channel is required' }), true;
+    const r = watchers.setChannelPaused(name, body.channel, chpMatch[2] === 'pause');
+    return json(res, r && r.ok === false ? 400 : 200, r), true;
+  }
 
   // ---- candidate sessions: a launchable, prioritized pending list a producer
   // (running session, watcher, or the user) adds to; the user launches or

@@ -881,6 +881,7 @@ document.getElementById('new-candidate-form').addEventListener('submit', (e) => 
 // ----------------------------------------------------------------- watchers
 
 const watchTemplate = document.getElementById('watcher-template');
+let watchEditOpen = false; // true while an inline channel time-editor is open (pauses re-render)
 
 // Re-pull watcher status and re-render now, so a Pause/Resume/Run reflects
 // immediately instead of waiting for the next SSE tick.
@@ -911,15 +912,25 @@ function buildWatcher(w) {
   card.dataset.state = w.state;
   card.querySelector('.watch-name').textContent = w.name;
   card.querySelector('.watch-trigger').textContent = w.trigger ? `#${w.trigger}` : '';
+  card.querySelector('.watch-auto').hidden = !w.discover;
 
   const stateEl = card.querySelector('.watch-state');
   stateEl.textContent = w.state;
   stateEl.className = 'watch-state watch-state-' + w.state;
 
+  // a pulsing dot when the watcher is actively running — the at-a-glance "alive"
+  card.querySelector('.watch-live').hidden = w.state !== 'running';
+
   renderWatchChannels(card.querySelector('.watch-channels'), w);
+
+  // poll time is the real (uniform) liveness signal — lead with it, relative + bright
+  const poll = card.querySelector('.watch-lastpoll');
+  poll.textContent = w.lastPollAt ? `polled ${agoText(w.lastPollAt)}` : 'not polled yet';
+  poll.title = w.lastPollAt ? `last poll ${fmtTime(w.lastPollAt)}` : '';
+  poll.classList.toggle('live', w.state === 'running' && !!w.lastPollAt);
   card.querySelector('.watch-every').textContent = w.everySeconds ? `every ${w.everySeconds}s` : '';
-  card.querySelector('.watch-lastpoll').textContent =
-    w.lastPollAt ? `last poll ${fmtTime(w.lastPollAt)}` : 'not polled yet';
+  const n = (w.channels || []).length;
+  card.querySelector('.watch-channelcount').textContent = n ? `${n} channel${n === 1 ? '' : 's'}` : '';
   card.querySelector('.watch-staged').textContent = `${w.staged || 0} staged`;
 
   const errEl = card.querySelector('.watch-error');
@@ -938,68 +949,228 @@ function buildWatcher(w) {
   return card;
 }
 
-// Each channel shows the friendly name (or its id until a channels:read scope is
-// granted), how far it's caught up ("last watched"), and a control to move that
-// point — e.g. to "now" after you've handled a backlog manually.
+// "1m ago" / "3h ago" / "2d ago" — used for the watcher's poll time (its real
+// liveness signal). Channels intentionally do NOT use a relative age: their
+// "watching since" point is a fixed floor, and a relative age there reads as
+// staleness when a quiet channel is perfectly healthy.
+function agoText(iso) {
+  const mins = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  if (mins < 1440) return `${Math.floor(mins / 60)}h ago`;
+  return `${Math.floor(mins / 1440)}d ago`;
+}
+function fmtSince(iso) {
+  return new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+// compact: time-only when it's today, else date+time — for the ⏱ button label
+function fmtSinceShort(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  const sameDay = d.toDateString() === today.toDateString();
+  return sameDay
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : d.toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+// Each channel row: name over its "from <point>" floor (the saved query start),
+// plus a per-channel pause toggle and a ⏱ control to change the floor. A paused
+// channel is skipped every poll and dimmed here.
 function renderWatchChannels(container, w) {
   container.textContent = '';
   const channels = w.channels || [];
+
+  if (channels.length > 1) {
+    const head = document.createElement('div');
+    head.className = 'wc-chan-head';
+    const setAll = document.createElement('button');
+    setAll.className = 'wc-setall';
+    setAll.textContent = 'Watch all from now';
+    setAll.title = "Move every channel's start point to now — skip any earlier backlog (does not poll)";
+    setAll.addEventListener('click', () => setAllWatchCursors(w));
+    head.appendChild(setAll);
+    container.appendChild(head);
+  }
+
   if (!channels.length) {
-    container.textContent = 'no channels';
+    const empty = document.createElement('div');
+    empty.className = 'wc-chan-empty';
+    empty.textContent = w.discover ? 'discovering channels on next poll…' : 'no channels';
+    container.appendChild(empty);
     return;
   }
+
+  const wrap = document.createElement('div');
+  wrap.className = 'wc-chans-wrap';
+  if (channels.length > 5) wrap.classList.add('overflowing'); // show scroll fade
+  const list = document.createElement('div');
+  list.className = 'wc-chans';
   for (const ch of channels) {
     const row = document.createElement('div');
-    row.className = 'watch-chan';
+    row.className = 'watch-chan' + (ch.paused ? ' paused' : '');
 
-    const label = document.createElement('span');
-    label.className = 'watch-chan-name';
-    label.textContent = ch.name || ch.id;
-    if (!ch.name) label.title = ch.id; // raw id until names are resolvable
+    const main = document.createElement('div');
+    main.className = 'chan-main';
+    const name = document.createElement('div');
+    name.className = 'chan-name';
+    name.textContent = ch.name || ch.id;
+    name.title = ch.name ? `${ch.name} (${ch.id})` : ch.id;
+    // The channel's recency of the last check — recent, so it reads as "live",
+    // not stale. The fixed "watch from" floor lives on the ⏱ tooltip instead.
+    const sub = document.createElement('div');
+    sub.className = 'chan-sub';
+    if (ch.paused) {
+      sub.textContent = 'paused';
+    } else {
+      sub.append(document.createTextNode('checked '));
+      const age = document.createElement('span');
+      age.className = 'chan-age';
+      age.textContent = w.lastPollAt ? agoText(w.lastPollAt) : 'not yet';
+      sub.appendChild(age);
+    }
+    main.append(name, sub);
 
-    const when = document.createElement('span');
-    when.className = 'watch-chan-watched';
-    when.textContent = ch.lastWatchedAt
-      ? `watched through ${fmtTime(ch.lastWatchedAt)}`
-      : 'baselines on first run';
+    const pauseBtn = document.createElement('button');
+    pauseBtn.className = 'chan-pause';
+    pauseBtn.textContent = ch.paused ? '▶' : '⏸';
+    pauseBtn.title = ch.paused ? 'Resume this channel' : 'Pause this channel';
+    pauseBtn.addEventListener('click', () => setChannelPaused(w.name, ch, !ch.paused));
 
     const setBtn = document.createElement('button');
-    setBtn.className = 'watch-chan-set ghost-btn';
-    setBtn.textContent = '⏱ set';
-    setBtn.title = 'Move the "last watched" point (skip backfill you have already handled)';
-    setBtn.addEventListener('click', () => setWatchCursor(w.name, ch));
+    setBtn.className = 'chan-set';
+    setBtn.textContent = '⏱';
+    setBtn.title = ch.watchingSince
+      ? `Polling from ${fmtSince(ch.watchingSince)} — click to change`
+      : 'Set the time to poll from';
+    setBtn.addEventListener('click', () => openChannelTimeEditor({ row, sub, pauseBtn, setBtn, w, ch }));
 
-    row.append(label, when, setBtn);
-    container.appendChild(row);
+    row.append(main, pauseBtn, setBtn);
+    list.appendChild(row);
   }
+  wrap.appendChild(list);
+  container.appendChild(wrap);
 }
 
-async function setWatchCursor(name, ch) {
-  const current = ch.lastWatchedAt || new Date().toISOString();
-  const ans = prompt(
-    `Set "last watched" for ${ch.name || ch.id}.\n` +
-    'Enter a date/time (ISO) or "now" to skip to the present. ' +
-    'This clears tracked threads for this channel.',
-    current
-  );
-  if (ans == null) return;
-  const at = ans.trim() || 'now';
+async function setChannelPaused(name, ch, paused) {
   try {
-    const res = await fetch(`/api/watchers/${encodeURIComponent(name)}/cursor`, {
+    const res = await fetch(`/api/watchers/${encodeURIComponent(name)}/channel/${paused ? 'pause' : 'resume'}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ channel: ch.id, at }),
+      body: JSON.stringify({ channel: ch.id }),
     });
     const r = await res.json();
     if (!res.ok || r.ok === false) throw new Error(r.error || 'failed');
-    toast(`${ch.name || ch.id}: watching from ${fmtTime(r.lastWatchedAt)}`, true);
+    toast(`${ch.name || ch.id}: ${paused ? 'paused' : 'resumed'}`, true);
     await refreshWatchers();
   } catch (err) {
-    toast('Set watch point failed: ' + err.message);
+    toast(`Channel ${paused ? 'pause' : 'resume'} failed: ` + err.message);
   }
 }
 
+async function setAllWatchCursors(w) {
+  const chans = w.channels || [];
+  if (!chans.length) return;
+  try {
+    for (const ch of chans) {
+      const res = await fetch(`/api/watchers/${encodeURIComponent(w.name)}/cursor`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ channel: ch.id, at: 'now' }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'failed');
+    }
+    toast(`${w.name}: all channels watching from now`, true);
+    await refreshWatchers();
+  } catch (err) {
+    toast('Set all failed: ' + err.message);
+  }
+}
+
+// datetime-local value ("YYYY-MM-DDTHH:mm", local) for an ISO instant.
+function toLocalInputValue(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+async function postWatchCursor(name, ch, at) {
+  const res = await fetch(`/api/watchers/${encodeURIComponent(name)}/cursor`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ channel: ch.id, at }),
+  });
+  const r = await res.json();
+  if (!res.ok || r.ok === false) throw new Error(r.error || 'failed');
+  return r;
+}
+
+// Inline calendar/time editor on the row — replaces the sub-line with a native
+// datetime picker + Now/Save/Cancel. No popup.
+function openChannelTimeEditor({ row, sub, pauseBtn, setBtn, w, ch }) {
+  if (row.classList.contains('editing')) return;
+  row.classList.add('editing');
+  watchEditOpen = true; // pause the periodic re-render so the picker isn't wiped
+  pauseBtn.hidden = true;
+  setBtn.hidden = true;
+  sub.textContent = '';
+
+  const input = document.createElement('input');
+  input.type = 'datetime-local';
+  input.className = 'chan-time-input';
+  input.value = toLocalInputValue(ch.watchingSince);
+
+  const mk = (txt, cls, fn) => {
+    const b = document.createElement('button');
+    b.className = cls;
+    b.textContent = txt;
+    b.addEventListener('click', fn);
+    return b;
+  };
+  const done = () => { watchEditOpen = false; return refreshWatchers(); };
+  const commit = async (at) => {
+    try {
+      const r = await postWatchCursor(w.name, ch, at);
+      const isPast = typeof at === 'number' && at < Date.now() - 60000;
+      if (isPast) {
+        // leave edit mode but keep render paused, and show the backfill on the row
+        // while we poll from the past point right now (so it happens visibly).
+        row.classList.remove('editing');
+        pauseBtn.hidden = false;
+        setBtn.hidden = false;
+        sub.textContent = '';
+        const bf = document.createElement('span');
+        bf.className = 'chan-backfill';
+        bf.textContent = `backfilling from ${fmtSince(r.watchingSince)}…`;
+        sub.appendChild(bf);
+        const run = await (await fetch(`/api/watchers/${encodeURIComponent(w.name)}/run`, { method: 'POST' })).json();
+        if (run && run.ok !== false) {
+          toast(run.staged ? `Backfill done · ${run.staged} new candidate${run.staged === 1 ? '' : 's'}` : 'Backfill done · nothing new', true);
+        }
+      } else {
+        toast(`${ch.name || ch.id}: watching from now`, true);
+      }
+    } catch (err) {
+      toast('Set failed: ' + err.message);
+    }
+    watchEditOpen = false; // resume rendering; the refresh clears the backfill line
+    await refreshWatchers();
+  };
+  const ctrls = document.createElement('span');
+  ctrls.className = 'chan-edit';
+  ctrls.append(
+    input,
+    mk('Now', 'chan-edit-btn', () => commit('now')),
+    mk('Save', 'chan-edit-btn primary', () => commit(input.value ? new Date(input.value).getTime() : 'now')),
+    mk('Cancel', 'chan-edit-btn', done)
+  );
+  sub.appendChild(ctrls);
+  input.focus();
+}
+
 function renderWatchers(data) {
+  // Don't rebuild the grid while a channel time-editor is open — the periodic
+  // SSE snapshot would otherwise destroy the inline picker mid-edit.
+  if (watchEditOpen) return;
   const status = data.watchers || { watchers: [] };
   const list = status.watchers || [];
   const grid = document.getElementById('watch-grid');
