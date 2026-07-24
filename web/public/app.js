@@ -636,93 +636,6 @@ async function refreshCandidates() {
   } catch { /* the next SSE snapshot will reconcile */ }
 }
 
-// Inline edit: flip the card body into a form (skill dropdown + folder + reason
-// + prompt textarea) with Save/Cancel — no popup. Re-render is paused while open
-// so the SSE snapshot can't wipe it (like the watcher time editor).
-let candEditOpen = false;
-async function enterCandEdit(card, c) {
-  if (card.classList.contains('editing')) return;
-  candEditOpen = true;
-  card.classList.add('editing');
-  const body = card.querySelector('.cand-body');
-  const actions = card.querySelector('.cand-actions');
-  body.textContent = '';
-  actions.textContent = '';
-
-  const head = document.createElement('div');
-  head.className = 'cand-head';
-  const h = document.createElement('span');
-  h.className = 'cand-edit-head';
-  h.textContent = 'editing candidate';
-  head.appendChild(h);
-
-  const fields = document.createElement('div');
-  fields.className = 'cand-fields';
-  const field = (label, control, tall) => {
-    const f = document.createElement('div');
-    f.className = 'field' + (tall ? ' tall' : '');
-    const l = document.createElement('label');
-    l.textContent = label;
-    f.append(l, control);
-    return f;
-  };
-
-  const skillSel = document.createElement('select');
-  skillSel.className = 'inp mono';
-  skillSel.innerHTML = '<option value="">(no skill)</option>';
-  // ensure the current skill is present even before /api/skills resolves
-  if (c.action.skill) skillSel.innerHTML += `<option value="${c.action.skill}" selected>/${c.action.skill}</option>`;
-  loadSkillOptions(skillSel, c.action.cwd, c.action.skill);
-
-  const cwdInp = document.createElement('input');
-  cwdInp.className = 'inp path';
-  cwdInp.value = c.action.cwd || '';
-  cwdInp.placeholder = '~/path/to/repo';
-
-  const reasonInp = document.createElement('input');
-  reasonInp.className = 'inp';
-  reasonInp.value = c.reason || '';
-
-  const promptTa = document.createElement('textarea');
-  promptTa.className = 'inp mono';
-  promptTa.value = c.action.prompt || '';
-
-  fields.append(
-    field('Skill', skillSel),
-    field('Folder', cwdInp),
-    field('Reason', reasonInp),
-    field('Prompt', promptTa, true)
-  );
-  body.append(head, fields);
-
-  const mk = (txt, cls, fn) => { const b = document.createElement('button'); b.className = cls; b.textContent = txt; b.addEventListener('click', fn); return b; };
-  const close = () => { candEditOpen = false; return refreshCandidates(); };
-  const save = mk('Save', 'primary-btn', async () => {
-    try {
-      await patch(`/api/candidates/${c.id}`, {
-        skill: skillSel.value.trim(),
-        cwd: cwdInp.value.trim(),
-        reason: reasonInp.value,
-        prompt: promptTa.value,
-      });
-      toast('Candidate updated', true);
-    } catch (err) { toast('Save failed: ' + err.message); }
-    await close();
-  });
-  actions.append(save, mk('Cancel', 'ghost-btn', close));
-  skillSel.focus();
-}
-
-// Populate a <select> with the skills available in `cwd` (like the launcher).
-async function loadSkillOptions(sel, cwd, current) {
-  try {
-    const { skills } = await (await fetch('/api/skills?cwd=' + encodeURIComponent(cwd || ''))).json();
-    sel.innerHTML = '<option value="">(no skill)</option>' +
-      skills.map((s) => `<option value="${s.name}">/${s.name}${s.scope !== 'user' ? ' · ' + s.scope : ''}</option>`).join('');
-    sel.value = current || '';
-  } catch { /* keep the fallback options already set */ }
-}
-
 async function reprioritize(c, delta) {
   try { await patch(`/api/candidates/${c.id}`, { priority: (c.priority || 0) + delta }); await refreshCandidates(); }
   catch (err) { toast('Reprioritize failed: ' + err.message); }
@@ -743,7 +656,7 @@ function candTitle(c) {
   const url = typeof ref === 'string' ? ref : ref.url;
   const pr = (ref.prRefs && ref.prRefs[0]) || prFromUrl(url);
   if (pr) return `${pr.repo} #${pr.number}`;
-  if (ref.channelName) return ref.channelName; // e.g. "#team-acg"
+  if (ref.channelName) return ref.channelName; // e.g. "#eng-alerts"
   if (ref.slackPermalink || (typeof ref === 'string' && ref.includes('slack.com'))) return 'Slack thread';
   return (c.action.prompt || '(no prompt)').split('\n')[0].slice(0, 80);
 }
@@ -831,7 +744,7 @@ function buildCandidate(c, ctx) {
         await post(`/api/candidates/${c.id}/dismiss`);
         await refreshCandidates();
       }));
-    editBtn.addEventListener('click', () => enterCandEdit(card, c));
+    editBtn.addEventListener('click', () => openCandEdit(c));
     upBtn.addEventListener('click', () => reprioritize(c, +1));
     downBtn.addEventListener('click', () => reprioritize(c, -1));
   } else {
@@ -857,9 +770,6 @@ function buildCandidate(c, ctx) {
 }
 
 function renderCandidates(data) {
-  // don't rebuild while an inline candidate editor is open — the SSE snapshot
-  // would otherwise wipe the form mid-edit.
-  if (candEditOpen) return;
   const list = data.candidates || [];
   const caps = data.caps || {};
   // match the server rule: count only actively-working sessions (busy/waiting),
@@ -922,39 +832,83 @@ function ncUpdateSkillUi() {
 ncSkill.addEventListener('change', ncUpdateSkillUi);
 ncCwd.addEventListener('change', ncLoadSkills);
 
-document.getElementById('new-candidate-btn').addEventListener('click', async () => {
+// the same dialog serves "new" (POST) and "edit" (PATCH) — ncEditId picks which.
+let ncEditId = null;
+const ncReason = document.getElementById('nc-reason');
+const ncPriority = document.getElementById('nc-priority');
+const ncTitle = document.getElementById('nc-dialog-title');
+const ncHint = document.getElementById('nc-dialog-hint');
+const ncSubmit = document.getElementById('nc-submit');
+
+async function ncLoadProjects() {
   try {
-    const res = await fetch('/api/projects');
-    const { projects } = await res.json();
+    const { projects } = await (await fetch('/api/projects')).json();
     document.getElementById('nc-projects').innerHTML = projects.map((p) => `<option value="${p}"></option>`).join('');
   } catch { /* picker still usable without suggestions */ }
+}
+
+document.getElementById('new-candidate-btn').addEventListener('click', async () => {
+  ncEditId = null;
+  ncTitle.textContent = 'New candidate session';
+  ncHint.textContent = 'A candidate waits in the list until you launch it — nothing runs now.';
+  ncSubmit.textContent = 'Add candidate';
+  ncCwd.required = true; // a new candidate needs a folder to launch into
+  ncCwd.value = ''; ncPrompt.value = ''; ncSkill.value = ''; ncReason.value = ''; ncPriority.value = '0';
+  await ncLoadProjects();
   ncLoadSkills();
+  ncUpdateSkillUi();
   ncDialog.showModal();
   ncCwd.focus();
 });
+
+// Open the same dialog to EDIT an existing candidate — a roomy popup for the
+// prompt, with folder suggestions, instead of a cramped in-card form.
+async function openCandEdit(c) {
+  ncEditId = c.id;
+  ncTitle.textContent = 'Edit candidate';
+  ncHint.textContent = 'Change the plan before you launch it.';
+  ncSubmit.textContent = 'Save changes';
+  ncCwd.required = false; // editing may leave the folder empty (set it later)
+  ncCwd.value = c.action.cwd || '';
+  ncReason.value = c.reason || '';
+  ncPriority.value = c.priority || 0;
+  ncPrompt.value = c.action.prompt || '';
+  await ncLoadProjects();
+  await ncLoadSkills();
+  // select the current skill even if it isn't in the folder's list
+  if (c.action.skill && ![...ncSkill.options].some((o) => o.value === c.action.skill)) {
+    ncSkill.add(new Option(`/${c.action.skill}`, c.action.skill));
+  }
+  ncSkill.value = c.action.skill || '';
+  ncUpdateSkillUi();
+  ncDialog.showModal();
+  ncPrompt.focus();
+}
 
 document.getElementById('nc-cancel').addEventListener('click', () => ncDialog.close());
 
 document.getElementById('new-candidate-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const btn = e.target.querySelector('button[type="submit"]');
-  withFeedback(btn, 'Add failed', async () => {
-    await post('/api/candidates', {
+  const editing = ncEditId;
+  withFeedback(btn, editing ? 'Save failed' : 'Add failed', async () => {
+    const body = {
       cwd: ncCwd.value.trim(),
       skill: ncSkill.value,
       prompt: ncPrompt.value.trim(),
-      reason: document.getElementById('nc-reason').value.trim(),
-      priority: Number(document.getElementById('nc-priority').value) || 0,
-      source: 'manual',
-    });
+      reason: ncReason.value.trim(),
+      priority: Number(ncPriority.value) || 0,
+    };
+    if (editing) {
+      await patch(`/api/candidates/${editing}`, body);
+      toast('Candidate updated', true);
+    } else {
+      await post('/api/candidates', { ...body, source: 'manual' });
+      toast('Candidate added', true);
+    }
     ncDialog.close();
-    ncPrompt.value = '';
-    ncSkill.value = '';
-    document.getElementById('nc-reason').value = '';
-    document.getElementById('nc-priority').value = '0';
-    ncUpdateSkillUi();
-    toast('Candidate added', true);
-  }, '✓ Added');
+    await refreshCandidates();
+  }, editing ? '✓ Saved' : '✓ Added');
 });
 
 // ----------------------------------------------------------------- watchers

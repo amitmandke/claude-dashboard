@@ -944,21 +944,6 @@ dialog input:focus, dialog textarea:focus { border-color: var(--accent); }
 .cand-dismiss { margin-left: auto; }
 .cand-dismiss:hover, .cand-clear:hover { color: var(--red-text); border-color: var(--red-edge); }
 
-/* inline edit form */
-.cand-edit-head { font-size: 11px; letter-spacing: .05em; text-transform: uppercase; color: var(--accent); font-weight: 600; }
-.cand-fields { display: flex; flex-direction: column; gap: 9px; }
-.cand-fields .field { display: grid; grid-template-columns: 60px 1fr; gap: 10px; align-items: center; }
-.cand-fields .field.tall { align-items: start; }
-.cand-fields .field.tall label { margin-top: 7px; }
-.cand-fields label { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
-.cand-fields .inp {
-  width: 100%; background: var(--inset); border: 1px solid var(--card-edge); color: var(--text);
-  border-radius: 7px; padding: 6px 9px; font-size: 13px; font-family: inherit;
-}
-.cand-fields .inp:focus { outline: none; border-color: var(--accent); background: var(--card); }
-.cand-fields select.inp { cursor: pointer; }
-.cand-fields textarea.inp { resize: vertical; min-height: 72px; line-height: 1.5; }
-.cand-fields .inp.path { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
 button.primary-btn:disabled, button.ghost-btn:disabled { opacity: .45; cursor: default; }
 
 /* ----- Watchers tab (reuses the candidate card patterns) ----- */
