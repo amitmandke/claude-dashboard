@@ -147,11 +147,13 @@ function add(input) {
   return c;
 }
 
-/** Edit the plan before launch: prompt / skill / priority, in place. */
+/** Edit the plan before launch: prompt / skill / cwd / reason / priority, in place. */
 function update(id, patch) {
   const c = find(id);
   if (!c) return null;
   if (typeof patch.prompt === 'string') c.action.prompt = patch.prompt;
+  if (typeof patch.cwd === 'string') c.action.cwd = patch.cwd.trim();
+  if (typeof patch.reason === 'string') c.reason = patch.reason;
   if (typeof patch.skill === 'string') {
     if (!isValidSkillName(patch.skill)) throw err(400, `invalid skill name: ${patch.skill}`);
     c.action.skill = patch.skill.trim();

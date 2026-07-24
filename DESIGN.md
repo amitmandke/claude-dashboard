@@ -196,17 +196,20 @@ without switching.
  │ │ Review the PR linked in #eng   │  │ Investigate the null deref…    │      │
  │ │ reason: failing CI on auth     │  │ reason: stack trace in #eng    │      │
  │ │ ~/code/api-service · session ↗ │  │ ~/code/webapp · manual         │      │
- │ │ [▷ Launch][▲][▼][⌥ Skill][✕]   │  │ [▷ Launch][▲][▼][⌥ Skill][✕]   │      │
+ │ │ [▷ Launch][▲][▼][✕ Dismiss]    │  │ [▷ Launch][▲][▼][✕ Dismiss]    │      │
  │ └────────────────────────────────┘  └────────────────────────────────┘      │
  └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Each card leads with a derived **title** (a PR as `repo #123`, else "Slack thread", else the
-first prompt line) and **link chips** (a PR link and/or a 💬 Slack-thread link, opened in a new
-tab), so the "what is this" is scannable rather than buried. Below that: the **skill** chip, the
-**reason**, the **prompt** (clamped to 3 lines with a ▾ more toggle to expand, and a separate ✎
-to edit — so reading doesn't fight editing), the directory, and the **source/producer**. The
-`ref` may be a plain URL or an object (`url` / `slackPermalink` / `prRefs`); the title/chips
+Each card leads with a derived **title** (a PR as `repo #123`, else the **Slack channel name**
+`#channel`, else "Slack thread", else the first prompt line) and **link chips** (a PR link
+and/or a 💬 `#channel` link, opened in a new tab), so the "what is this" is scannable rather than
+buried. Below that: the **skill** chip, the **reason**, the **prompt** (clamped to 3 lines with a
+▾ more toggle), the directory, and the **source/producer**. **✎ Edit** flips the card body into
+an **inline form** — Skill (a dropdown of the folder's real skills), Folder, Reason, Prompt
+(textarea) — saved via the PATCH above (no `prompt()` popups; re-render pauses while editing so
+the SSE tick can't wipe it). The `ref` may be a plain URL or an object (`url` / `slackPermalink` /
+`channelName` / `prRefs`) — the watcher attaches `channelName` at stage-time; the title/chips
 handle both. The **filter** box narrows the
 visible cards by case-insensitive substring across skill / prompt / reason / cwd / source —
 purely client-side, since the full list is already in the snapshot. Per-card actions:
@@ -215,7 +218,7 @@ purely client-side, since the full list is already in the snapshot. Per-card act
 |---|---|
 | **▷ Launch** | spawn it via the same path as New Session; the candidate is marked `launched` and a normal live card appears on the Sessions tab. Disabled (with an "N working" hint) when the count of **actively-working** sessions (busy/waiting) is at `maxConcurrent`. |
 | **▲ / ▼** | raise / lower priority; the list re-sorts (higher launches first, oldest-first within a priority) |
-| **⌥ Skill** / click the prompt | edit the plan before launching (skill / prompt) |
+| **✎ Edit** | flip the card into an inline form to edit skill / folder / reason / prompt before launching |
 | **✕ Dismiss** / **↩ Restore** | drop a pending item / restore a dismissed one |
 | **✕ Clear** | remove a `launched`/`dismissed` item from the list immediately |
 
@@ -299,7 +302,7 @@ server/src/
 | `/api/sessions/new` | POST `{cwd, prompt?, skill?}` | open a new iTerm2 tab and launch `claude` there; `skill` is composed into a leading `/skill` (with `prompt` as its arguments) server-side, so callers needn't know the slash-command convention. Returns `{ok, cwd, prompt}` — the new pid isn't known synchronously (the card appears on the next scan). |
 | `/api/candidates` | GET | the candidate list (also carried in the SSE snapshot) |
 | `/api/candidates` | POST `{cwd, skill?, prompt?, priority?, reason?, source?, producer?, ref?, dedupeKey?}` | add a fully-specified candidate; reuses `/sessions/new`'s validation; deduped on `dedupeKey`; rejected (429) past `maxPending`. Returns `{id}`. |
-| `/api/candidates/:id` | PATCH `{prompt?, skill?, priority?}` | edit / reprioritize a candidate |
+| `/api/candidates/:id` | PATCH `{prompt?, skill?, cwd?, reason?, priority?}` | edit / reprioritize a candidate (the card's inline ✎ Edit form saves these) |
 | `/api/candidates/:id/launch` | POST | spawn it (same path as `/sessions/new`), mark `launched`; 409 at the `maxConcurrent` cap |
 | `/api/candidates/:id/dismiss` · `/undismiss` | POST | mark `dismissed` / restore to `pending` |
 | `/api/candidates/:id` | DELETE | remove the item from the list now (the ✕ Clear action) |

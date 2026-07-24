@@ -302,10 +302,10 @@ async function runWatcherOnce(watcher, deps) {
         continue;
       }
 
-      let ref;
+      let permalink;
       try {
         const link = await client.permalink({ channel, message_ts: threadId });
-        ref = link.permalink;
+        permalink = link.permalink;
       } catch {
         /* permalink is best-effort */
       }
@@ -318,7 +318,7 @@ async function runWatcherOnce(watcher, deps) {
         (prRefs[0] && resolveRepo(prRefs[0].repo)) ||
         watcher.defaultCwd ||
         '';
-      const prompt = useModelPlan ? plan.prompt : launchPromptFrom({ threadText, prRefs, permalink: ref });
+      const prompt = useModelPlan ? plan.prompt : launchPromptFrom({ threadText, prRefs, permalink });
       let reason;
       if (matchedIntent) reason = `Slack ${label} matched intent "${matchedIntent.name}"`;
       else if (plan.unclassified) reason = plan.reason;
@@ -332,7 +332,9 @@ async function runWatcherOnce(watcher, deps) {
         priority: priorityFor(plan.confidence),
         source: 'slack',
         producer: 'watcher',
-        ref,
+        // carry the channel name + PR refs so the card leads with "#channel" or
+        // the PR ref instead of a bare "Slack thread".
+        ref: { slackPermalink: permalink, channelName: state.channelNameOf(name, channel), prRefs },
         dedupeKey: state.seenKey(channel, threadId),
       });
       staged++;

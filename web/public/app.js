@@ -636,18 +636,91 @@ async function refreshCandidates() {
   } catch { /* the next SSE snapshot will reconcile */ }
 }
 
-async function editPrompt(c) {
-  const next = prompt('Edit the prompt for this candidate:', c.action.prompt || '');
-  if (next === null) return;
-  try { await patch(`/api/candidates/${c.id}`, { prompt: next }); await refreshCandidates(); }
-  catch (err) { toast('Edit failed: ' + err.message); }
+// Inline edit: flip the card body into a form (skill dropdown + folder + reason
+// + prompt textarea) with Save/Cancel — no popup. Re-render is paused while open
+// so the SSE snapshot can't wipe it (like the watcher time editor).
+let candEditOpen = false;
+async function enterCandEdit(card, c) {
+  if (card.classList.contains('editing')) return;
+  candEditOpen = true;
+  card.classList.add('editing');
+  const body = card.querySelector('.cand-body');
+  const actions = card.querySelector('.cand-actions');
+  body.textContent = '';
+  actions.textContent = '';
+
+  const head = document.createElement('div');
+  head.className = 'cand-head';
+  const h = document.createElement('span');
+  h.className = 'cand-edit-head';
+  h.textContent = 'editing candidate';
+  head.appendChild(h);
+
+  const fields = document.createElement('div');
+  fields.className = 'cand-fields';
+  const field = (label, control, tall) => {
+    const f = document.createElement('div');
+    f.className = 'field' + (tall ? ' tall' : '');
+    const l = document.createElement('label');
+    l.textContent = label;
+    f.append(l, control);
+    return f;
+  };
+
+  const skillSel = document.createElement('select');
+  skillSel.className = 'inp mono';
+  skillSel.innerHTML = '<option value="">(no skill)</option>';
+  // ensure the current skill is present even before /api/skills resolves
+  if (c.action.skill) skillSel.innerHTML += `<option value="${c.action.skill}" selected>/${c.action.skill}</option>`;
+  loadSkillOptions(skillSel, c.action.cwd, c.action.skill);
+
+  const cwdInp = document.createElement('input');
+  cwdInp.className = 'inp path';
+  cwdInp.value = c.action.cwd || '';
+  cwdInp.placeholder = '~/path/to/repo';
+
+  const reasonInp = document.createElement('input');
+  reasonInp.className = 'inp';
+  reasonInp.value = c.reason || '';
+
+  const promptTa = document.createElement('textarea');
+  promptTa.className = 'inp mono';
+  promptTa.value = c.action.prompt || '';
+
+  fields.append(
+    field('Skill', skillSel),
+    field('Folder', cwdInp),
+    field('Reason', reasonInp),
+    field('Prompt', promptTa, true)
+  );
+  body.append(head, fields);
+
+  const mk = (txt, cls, fn) => { const b = document.createElement('button'); b.className = cls; b.textContent = txt; b.addEventListener('click', fn); return b; };
+  const close = () => { candEditOpen = false; return refreshCandidates(); };
+  const save = mk('Save', 'primary-btn', async () => {
+    try {
+      await patch(`/api/candidates/${c.id}`, {
+        skill: skillSel.value.trim(),
+        cwd: cwdInp.value.trim(),
+        reason: reasonInp.value,
+        prompt: promptTa.value,
+      });
+      toast('Candidate updated', true);
+    } catch (err) { toast('Save failed: ' + err.message); }
+    await close();
+  });
+  actions.append(save, mk('Cancel', 'ghost-btn', close));
+  skillSel.focus();
 }
 
-async function editSkill(c) {
-  const next = prompt('Skill (bare name like review-pr; empty for none):', c.action.skill || '');
-  if (next === null) return;
-  try { await patch(`/api/candidates/${c.id}`, { skill: next.trim() }); await refreshCandidates(); }
-  catch (err) { toast('Skill change failed: ' + err.message); }
+// Populate a <select> with the skills available in `cwd` (like the launcher).
+async function loadSkillOptions(sel, cwd, current) {
+  try {
+    const { skills } = await (await fetch('/api/skills?cwd=' + encodeURIComponent(cwd || ''))).json();
+    sel.innerHTML = '<option value="">(no skill)</option>' +
+      skills.map((s) => `<option value="${s.name}">/${s.name}${s.scope !== 'user' ? ' · ' + s.scope : ''}</option>`).join('');
+    sel.value = current || '';
+  } catch { /* keep the fallback options already set */ }
 }
 
 async function reprioritize(c, delta) {
@@ -662,11 +735,15 @@ function prFromUrl(u) {
   const m = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)/.exec(u || '');
   return m ? { repo: m[2], number: +m[3], url: u } : null;
 }
+function prUrl(pr) {
+  return pr.url || (pr.repo && pr.number != null ? `https://github.com/${pr.repo}/pull/${pr.number}` : null);
+}
 function candTitle(c) {
   const ref = c.ref || {};
   const url = typeof ref === 'string' ? ref : ref.url;
   const pr = (ref.prRefs && ref.prRefs[0]) || prFromUrl(url);
   if (pr) return `${pr.repo} #${pr.number}`;
+  if (ref.channelName) return ref.channelName; // e.g. "#team-acg"
   if (ref.slackPermalink || (typeof ref === 'string' && ref.includes('slack.com'))) return 'Slack thread';
   return (c.action.prompt || '(no prompt)').split('\n')[0].slice(0, 80);
 }
@@ -675,9 +752,9 @@ function candLinks(c) {
   const out = [];
   const url = typeof ref === 'string' ? ref : ref.url;
   const pr = (ref.prRefs && ref.prRefs[0]) || prFromUrl(url);
-  if (pr) out.push({ label: `PR ${pr.repo}#${pr.number} ↗`, href: pr.url || url });
+  if (pr) out.push({ label: `PR ${pr.repo}#${pr.number} ↗`, href: prUrl(pr) || url });
   else if (url) out.push({ label: '↗ link', href: url });
-  if (ref.slackPermalink) out.push({ label: '💬 Slack thread ↗', href: ref.slackPermalink });
+  if (ref.slackPermalink) out.push({ label: `💬 ${ref.channelName || 'Slack thread'} ↗`, href: ref.slackPermalink });
   return out;
 }
 
@@ -723,7 +800,6 @@ function buildCandidate(c, ctx) {
   requestAnimationFrame(() => {
     if (promptEl.scrollHeight - promptEl.clientHeight > 4) moreBtn.hidden = false;
   });
-  card.querySelector('.cand-prompt-edit').addEventListener('click', () => editPrompt(c));
 
   const cwdEl = card.querySelector('.cand-cwd');
   cwdEl.textContent = c.action.cwd || '(no repo — pick one before launch)';
@@ -734,7 +810,7 @@ function buildCandidate(c, ctx) {
   const launchBtn = card.querySelector('.cand-launch');
   const dismissBtn = card.querySelector('.cand-dismiss');
   const undismissBtn = card.querySelector('.cand-undismiss');
-  const skillBtn = card.querySelector('.cand-skill-btn');
+  const editBtn = card.querySelector('.cand-edit');
   const upBtn = card.querySelector('.cand-prio-up');
   const downBtn = card.querySelector('.cand-prio-down');
   const clearBtn = card.querySelector('.cand-clear');
@@ -755,13 +831,13 @@ function buildCandidate(c, ctx) {
         await post(`/api/candidates/${c.id}/dismiss`);
         await refreshCandidates();
       }));
-    skillBtn.addEventListener('click', () => editSkill(c));
+    editBtn.addEventListener('click', () => enterCandEdit(card, c));
     upBtn.addEventListener('click', () => reprioritize(c, +1));
     downBtn.addEventListener('click', () => reprioritize(c, -1));
   } else {
     // history item — a dismissed one can be restored; either can be cleared now
     // (otherwise it auto-prunes: launched soon, dismissed after a few days)
-    for (const b of [launchBtn, dismissBtn, skillBtn, upBtn, downBtn, card.querySelector('.cand-prompt-edit')]) b.hidden = true;
+    for (const b of [launchBtn, dismissBtn, editBtn, upBtn, downBtn]) b.hidden = true;
     clearBtn.hidden = false;
     clearBtn.addEventListener('click', () =>
       withFeedback(clearBtn, 'Clear failed', async () => {
@@ -781,6 +857,9 @@ function buildCandidate(c, ctx) {
 }
 
 function renderCandidates(data) {
+  // don't rebuild while an inline candidate editor is open — the SSE snapshot
+  // would otherwise wipe the form mid-edit.
+  if (candEditOpen) return;
   const list = data.candidates || [];
   const caps = data.caps || {};
   // match the server rule: count only actively-working sessions (busy/waiting),

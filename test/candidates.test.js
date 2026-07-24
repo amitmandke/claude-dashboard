@@ -95,12 +95,14 @@ test('add rejects an invalid skill name', () => {
   assert.throws(() => store.add({ cwd: '/tmp', skill: 'bad name' }), (e) => e.status === 400);
 });
 
-test('update edits prompt, skill and priority in place; unknown id returns null', () => {
+test('update edits prompt, skill, cwd, reason and priority in place; unknown id returns null', () => {
   fresh();
-  const c = store.add({ cwd: '/tmp', prompt: 'old' });
-  const u = store.update(c.id, { prompt: 'new', skill: 'debug', priority: 3 });
+  const c = store.add({ cwd: '/tmp', prompt: 'old', reason: 'old reason' });
+  const u = store.update(c.id, { prompt: 'new', skill: 'debug', cwd: '  /repos/x  ', reason: 'why', priority: 3 });
   assert.equal(u.action.prompt, 'new');
   assert.equal(u.action.skill, 'debug');
+  assert.equal(u.action.cwd, '/repos/x'); // trimmed
+  assert.equal(u.reason, 'why');
   assert.equal(u.priority, 3);
   assert.equal(store.update('nope', { prompt: 'x' }), null);
 });
