@@ -31,6 +31,7 @@ const watcherConfig = require('./config');
 
 const HISTORY_MAX_PAGES = 10;
 const REPLIES_MAX_PAGES = 10;
+const DISCOVER_MAX_PAGES = 20;
 
 const DAY_MS = 86400000;
 
@@ -98,12 +99,44 @@ function newestTs(messages) {
 }
 
 /**
+ * Channel ids the bot is a member of (auto-discovery), paginated + capped.
+ * Prefers public + private, but degrades to public-only when the token lacks
+ * `groups:read` — private channels also need `groups:history` to read, so a
+ * public-only token can't watch them anyway. Never throws for a missing scope.
+ */
+async function discoverChannels(client) {
+  for (const types of ['public_channel,private_channel', 'public_channel']) {
+    const ids = [];
+    let cursor;
+    try {
+      for (let page = 0; page < DISCOVER_MAX_PAGES; page++) {
+        const res = await client.userConversations({ types, ...(cursor ? { cursor } : {}) });
+        for (const c of res.channels || []) if (c && c.id) ids.push(c.id);
+        cursor = res.response_metadata && res.response_metadata.next_cursor;
+        if (!cursor) break;
+      }
+      return ids;
+    } catch (e) {
+      // fall through to the narrower type set once, then give up
+      if (!/missing_scope/.test(e.message) || types === 'public_channel') throw e;
+    }
+  }
+  return [];
+}
+
+/**
  * Scan ONE channel: fetch new top-level messages since the channel's cursor,
  * track threads, re-scan tracked threads for late replies, and return the
  * threads that qualify (a `@you` mention). Each channel owns its cursor/threads
- * in state, so channels backfill independently and can run in parallel. On the
- * channel's first run there is no cursor: we baseline (record the cursor, stage
- * nothing) instead of backfilling its whole history.
+ * in state, so channels backfill independently and can run in parallel.
+ *
+ * The FIRST time a channel is seen (no cursor) we baseline to NOW and fetch
+ * nothing — every channel starts from the same moment, no already-posted message
+ * (however recent, answered or not) is ever staged, and the first poll stays
+ * instant even across many channels. From then on each poll reads only
+ * cursor→now (small/quick) and advances the cursor to the newest message read,
+ * so a message is never re-read; after downtime the first read is just the
+ * missed window.
  */
 async function scanChannel({ name, channel, qualifies, label, client, nowMs, retention }) {
   // Resolve + cache the friendly channel name (best-effort; needs channels:read/
@@ -119,21 +152,26 @@ async function scanChannel({ name, channel, qualifies, label, client, nowMs, ret
   }
 
   const c = state.forChannel(name, channel);
-  const firstRun = !c.cursor;
-  const qualifiers = [];
+  if (!c.cursor) {
+    const ts = (nowMs / 1000).toFixed(6);
+    state.advanceCursor(name, channel, ts);
+    state.setSince(name, channel, ts); // stable "watching from" = now
+    log(`ACTION watcher name=${name} channel=${channel} note=baseline (from now; no fetch)`);
+    return { qualifiers: [], scannedThreads: 0, newMessages: 0 };
+  }
 
+  const qualifiers = [];
   const { messages, capped } = await fetchHistory(client, channel, c.cursor);
   if (capped) log(`ACTION watcher name=${name} channel=${channel} note=history-capped pages=${HISTORY_MAX_PAGES}`);
   for (const msg of messages) {
     const threadId = match.threadIdOf(msg);
     state.trackThread(name, channel, threadId, nowMs);
-    if (!firstRun && !match.isNoise(msg) && qualifies(msg)) {
+    if (!match.isNoise(msg) && qualifies(msg)) {
       qualifiers.push({ channel, threadId, why: `${label} in message` });
     }
   }
   const newestTop = newestTs(messages);
   if (newestTop) state.advanceCursor(name, channel, newestTop);
-  if (firstRun) log(`ACTION watcher name=${name} channel=${channel} note=baseline (start from now; backlog skipped)`);
 
   // Re-scan tracked threads for late replies that mention you.
   const cutoff = nowMs - retention.threadTtlMs;
@@ -149,7 +187,7 @@ async function scanChannel({ name, channel, qualifies, label, client, nowMs, ret
         state.trackThread(name, channel, threadId, nowMs);
         const newest = newestTs(fresh);
         if (newest) state.setReplyCursor(name, channel, threadId, newest);
-        if (!firstRun && fresh.some((m) => !match.isNoise(m) && qualifies(m))) {
+        if (fresh.some((m) => !match.isNoise(m) && qualifies(m))) {
           qualifiers.push({ channel, threadId, why: `${label} in reply` });
         }
       }
@@ -184,16 +222,32 @@ async function runWatcherOnce(watcher, deps) {
   const qualifies = (msg) => match.mentionsAny(match.fullText(msg), users);
 
   // A message qualifies by @-mentioning an allowlisted user (anywhere in it,
-  // including a late thread reply). Every configured channel is scanned in
+  // including a late thread reply). Every watched channel is scanned in
   // parallel; each keeps its own cursor/threads so they backfill independently.
-  const channels = (watcher.channels || []).filter(Boolean);
+  // `discover` watchers resolve their channel list live (every channel the bot
+  // is a member of); otherwise the configured list is used.
+  let channels;
+  if (watcher.discover) {
+    try {
+      channels = await discoverChannels(client);
+      log(`ACTION watcher name=${name} note=discovered channels=${channels.length}`);
+    } catch (e) {
+      log(`ERROR watcher name=${name} discover: ${e.message}`);
+      return { staged: 0, scannedThreads: 0, newMessages: 0 };
+    }
+  } else {
+    channels = (watcher.channels || []).filter(Boolean);
+  }
   if (channels.length === 0) {
     log(`ACTION watcher name=${name} note=no-channel`);
     return { staged: 0, scannedThreads: 0, newMessages: 0 };
   }
 
+  // a paused channel is skipped entirely — its cursor/since stay put, so resuming
+  // backfills from where it left off.
+  const active = channels.filter((channel) => !state.isPaused(name, channel));
   const scans = await Promise.all(
-    channels.map((channel) =>
+    active.map((channel) =>
       scanChannel({ name, channel, qualifies, label, client, nowMs, retention })
     )
   );
@@ -248,10 +302,10 @@ async function runWatcherOnce(watcher, deps) {
         continue;
       }
 
-      let ref;
+      let permalink;
       try {
         const link = await client.permalink({ channel, message_ts: threadId });
-        ref = link.permalink;
+        permalink = link.permalink;
       } catch {
         /* permalink is best-effort */
       }
@@ -264,7 +318,7 @@ async function runWatcherOnce(watcher, deps) {
         (prRefs[0] && resolveRepo(prRefs[0].repo)) ||
         watcher.defaultCwd ||
         '';
-      const prompt = useModelPlan ? plan.prompt : launchPromptFrom({ threadText, prRefs, permalink: ref });
+      const prompt = useModelPlan ? plan.prompt : launchPromptFrom({ threadText, prRefs, permalink });
       let reason;
       if (matchedIntent) reason = `Slack ${label} matched intent "${matchedIntent.name}"`;
       else if (plan.unclassified) reason = plan.reason;
@@ -278,7 +332,9 @@ async function runWatcherOnce(watcher, deps) {
         priority: priorityFor(plan.confidence),
         source: 'slack',
         producer: 'watcher',
-        ref,
+        // carry the channel name + PR refs so the card leads with "#channel" or
+        // the PR ref instead of a bare "Slack thread".
+        ref: { slackPermalink: permalink, channelName: state.channelNameOf(name, channel), prRefs },
         dedupeKey: state.seenKey(channel, threadId),
       });
       staged++;
@@ -342,6 +398,7 @@ function entryFromWatcher(w, state) {
   return {
     name: w.name,
     channels: w.channels || [],
+    discover: !!w.discover,
     everySeconds: w.everySeconds,
     trigger: w.trigger ? w.trigger.type : null,
     state,
@@ -450,6 +507,7 @@ function resume(name) {
   } else {
     e.watcher = w;
     e.channels = w.channels;
+    e.discover = !!w.discover;
     e.everySeconds = w.everySeconds;
     e.trigger = w.trigger ? w.trigger.type : null;
   }
@@ -475,7 +533,8 @@ async function runNow(name) {
 function setChannelCursor(name, channel, at, nowMs = Date.now()) {
   const e = runtime.get(name);
   if (!e) return { ok: false, error: 'unknown watcher' };
-  if (!e.channels.includes(channel)) return { ok: false, error: `channel ${channel} is not watched by ${name}` };
+  const watched = new Set([...(e.channels || []), ...state.channelsOf(name)]);
+  if (!watched.has(channel)) return { ok: false, error: `channel ${channel} is not watched by ${name}` };
 
   let ms;
   if (at === 'now' || at == null) ms = nowMs;
@@ -489,7 +548,19 @@ function setChannelCursor(name, channel, at, nowMs = Date.now()) {
   state.setCursor(name, channel, ts, { clearThreads: true });
   state.save();
   log(`ACTION watcher name=${name} channel=${channel} set-cursor at=${new Date(ms).toISOString()}`);
-  return { ok: true, channel, lastWatchedAt: new Date(ms).toISOString() };
+  return { ok: true, channel, watchingSince: new Date(ms).toISOString() };
+}
+
+/** Pause or resume a single channel within a watcher (persisted in state). */
+function setChannelPaused(name, channel, paused) {
+  const e = runtime.get(name);
+  if (!e) return { ok: false, error: 'unknown watcher' };
+  const watched = new Set([...(e.channels || []), ...state.channelsOf(name)]);
+  if (!watched.has(channel)) return { ok: false, error: `channel ${channel} is not watched by ${name}` };
+  state.setPaused(name, channel, paused);
+  state.save();
+  log(`ACTION watcher name=${name} channel=${channel} ${paused ? 'paused' : 'resumed'}`);
+  return { ok: true, channel, paused: !!paused };
 }
 
 function stopAll() {
@@ -537,14 +608,17 @@ function getStatus() {
     repos: deps ? deps.repoMap.list().length : 0,
     watchers: [...runtime.values()].map((e) => ({
       name: e.name,
-      channels: e.channels.map((id) => {
-        const cursor = state.cursorOf(e.name, id);
+      discover: !!e.discover,
+      // explicit config channels plus any actually watched (discovered) ones
+      channels: [...new Set([...(e.channels || []), ...state.channelsOf(e.name)])].map((id) => {
+        const since = state.sinceOf(e.name, id);
         return {
           id,
           name: state.channelNameOf(e.name, id) || null,
-          // the cursor ts is "last watched" — everything up to here is caught up;
-          // null means it will baseline (start from now) on its first poll.
-          lastWatchedAt: cursor ? new Date(parseFloat(cursor) * 1000).toISOString() : null,
+          // the stable "watching from" point (not the advancing cursor); null
+          // means it will baseline (start from now) on its first poll.
+          watchingSince: since ? new Date(parseFloat(since) * 1000).toISOString() : null,
+          paused: state.isPaused(e.name, id),
         };
       }),
       everySeconds: e.everySeconds,
@@ -579,6 +653,7 @@ module.exports = {
   resume,
   runNow,
   setChannelCursor,
+  setChannelPaused,
   stopAll,
   startAll,
   getStatus,

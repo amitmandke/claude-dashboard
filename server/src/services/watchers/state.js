@@ -62,13 +62,30 @@ function forWatcher(name) {
   return w;
 }
 
-/** The per-channel slice, created on first touch. */
+/**
+ * The per-channel slice, created on first touch.
+ *   cursor — advances every poll to the newest message read (internal; drives
+ *            incremental reads). NOT shown to the user (it wobbles per activity).
+ *   since  — the stable "watching from" point: set when the channel is first
+ *            baselined and whenever the user moves it, never advanced by polling.
+ *            This is what the UI shows.
+ */
 function forChannel(name, channelId) {
   const w = forWatcher(name);
-  if (!w.channels[channelId]) w.channels[channelId] = { cursor: null, name: null, threads: {} };
+  if (!w.channels[channelId]) w.channels[channelId] = { cursor: null, since: null, name: null, threads: {}, paused: false };
   const c = w.channels[channelId];
   if (!c.threads) c.threads = {};
   return c;
+}
+
+/** Per-channel pause: a paused channel is skipped on every poll (state kept). */
+function setPaused(name, channelId, paused) {
+  forChannel(name, channelId).paused = !!paused;
+}
+function isPaused(name, channelId) {
+  const all = load();
+  const c = all[name] && all[name].channels && all[name].channels[channelId];
+  return !!(c && c.paused);
 }
 
 /** Slack timestamps ("1718.000123") compare correctly as numbers. */
@@ -90,6 +107,18 @@ function cursorOf(name, channelId) {
   return (c && c.cursor) || null;
 }
 
+/** The stable "watching from" point (falls back to the cursor for old state). */
+function sinceOf(name, channelId) {
+  const all = load();
+  const c = all[name] && all[name].channels && all[name].channels[channelId];
+  return (c && (c.since || c.cursor)) || null;
+}
+
+/** Set the stable "watching from" point without touching the advancing cursor. */
+function setSince(name, channelId, ts) {
+  forChannel(name, channelId).since = ts || null;
+}
+
 /**
  * Explicitly set (move) a channel's cursor — the editable "last watched" point.
  * Unlike advanceCursor this accepts any value (including moving forward past a
@@ -99,6 +128,7 @@ function cursorOf(name, channelId) {
 function setCursor(name, channelId, ts, { clearThreads = true } = {}) {
   const c = forChannel(name, channelId);
   c.cursor = ts || null;
+  c.since = ts || null; // the displayed "watching from" point moves with an explicit set
   if (clearThreads) {
     c.threads = {};
     const w = forWatcher(name);
@@ -118,6 +148,12 @@ function channelNameOf(name, channelId) {
   const all = load();
   const c = all[name] && all[name].channels && all[name].channels[channelId];
   return (c && c.name) || null;
+}
+
+/** Channel ids this watcher has state for (i.e. has actually watched). */
+function channelsOf(name) {
+  const all = load();
+  return all[name] && all[name].channels ? Object.keys(all[name].channels) : [];
 }
 
 /** Record that a thread exists / had activity, so we re-scan it for late mentions. */
@@ -195,9 +231,14 @@ module.exports = {
   forChannel,
   advanceCursor,
   cursorOf,
+  sinceOf,
+  setSince,
   setCursor,
+  setPaused,
+  isPaused,
   setChannelName,
   channelNameOf,
+  channelsOf,
   trackThread,
   setReplyCursor,
   isSeen,

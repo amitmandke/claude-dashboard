@@ -196,17 +196,21 @@ without switching.
  │ │ Review the PR linked in #eng   │  │ Investigate the null deref…    │      │
  │ │ reason: failing CI on auth     │  │ reason: stack trace in #eng    │      │
  │ │ ~/code/api-service · session ↗ │  │ ~/code/webapp · manual         │      │
- │ │ [▷ Launch][▲][▼][⌥ Skill][✕]   │  │ [▷ Launch][▲][▼][⌥ Skill][✕]   │      │
+ │ │ [▷ Launch][▲][▼][✕ Dismiss]    │  │ [▷ Launch][▲][▼][✕ Dismiss]    │      │
  │ └────────────────────────────────┘  └────────────────────────────────┘      │
  └────────────────────────────────────────────────────────────────────────────┘
 ```
 
-Each card leads with a derived **title** (a PR as `repo #123`, else "Slack thread", else the
-first prompt line) and **link chips** (a PR link and/or a 💬 Slack-thread link, opened in a new
-tab), so the "what is this" is scannable rather than buried. Below that: the **skill** chip, the
-**reason**, the **prompt** (clamped to 3 lines with a ▾ more toggle to expand, and a separate ✎
-to edit — so reading doesn't fight editing), the directory, and the **source/producer**. The
-`ref` may be a plain URL or an object (`url` / `slackPermalink` / `prRefs`); the title/chips
+Each card leads with a derived **title** (a PR as `repo #123`, else the **Slack channel name**
+`#channel`, else "Slack thread", else the first prompt line) and **link chips** (a PR link
+and/or a 💬 `#channel` link, opened in a new tab), so the "what is this" is scannable rather than
+buried. Below that: the **skill** chip, the **reason**, the **prompt** (clamped to 3 lines with a
+▾ more toggle), the directory, and the **source/producer**. **✎ Edit** opens the candidate
+**dialog** (the same modal as ＋ New candidate, in edit mode) — a roomy popup with a resizable
+prompt textarea, a Folder input with recent-project suggestions (`<datalist>` from `/api/projects`),
+and a Skill dropdown of the folder's real skills — and saves via the PATCH above (no `prompt()`
+popups). The `ref` may be a plain URL or an object (`url` / `slackPermalink` /
+`channelName` / `prRefs`) — the watcher attaches `channelName` at stage-time; the title/chips
 handle both. The **filter** box narrows the
 visible cards by case-insensitive substring across skill / prompt / reason / cwd / source —
 purely client-side, since the full list is already in the snapshot. Per-card actions:
@@ -215,7 +219,7 @@ purely client-side, since the full list is already in the snapshot. Per-card act
 |---|---|
 | **▷ Launch** | spawn it via the same path as New Session; the candidate is marked `launched` and a normal live card appears on the Sessions tab. Disabled (with an "N working" hint) when the count of **actively-working** sessions (busy/waiting) is at `maxConcurrent`. |
 | **▲ / ▼** | raise / lower priority; the list re-sorts (higher launches first, oldest-first within a priority) |
-| **⌥ Skill** / click the prompt | edit the plan before launching (skill / prompt) |
+| **✎ Edit** | flip the card into an inline form to edit skill / folder / reason / prompt before launching |
 | **✕ Dismiss** / **↩ Restore** | drop a pending item / restore a dismissed one |
 | **✕ Clear** | remove a `launched`/`dismissed` item from the list immediately |
 
@@ -299,13 +303,14 @@ server/src/
 | `/api/sessions/new` | POST `{cwd, prompt?, skill?}` | open a new iTerm2 tab and launch `claude` there; `skill` is composed into a leading `/skill` (with `prompt` as its arguments) server-side, so callers needn't know the slash-command convention. Returns `{ok, cwd, prompt}` — the new pid isn't known synchronously (the card appears on the next scan). |
 | `/api/candidates` | GET | the candidate list (also carried in the SSE snapshot) |
 | `/api/candidates` | POST `{cwd, skill?, prompt?, priority?, reason?, source?, producer?, ref?, dedupeKey?}` | add a fully-specified candidate; reuses `/sessions/new`'s validation; deduped on `dedupeKey`; rejected (429) past `maxPending`. Returns `{id}`. |
-| `/api/candidates/:id` | PATCH `{prompt?, skill?, priority?}` | edit / reprioritize a candidate |
+| `/api/candidates/:id` | PATCH `{prompt?, skill?, cwd?, reason?, priority?}` | edit / reprioritize a candidate (the card's inline ✎ Edit form saves these) |
 | `/api/candidates/:id/launch` | POST | spawn it (same path as `/sessions/new`), mark `launched`; 409 at the `maxConcurrent` cap |
 | `/api/candidates/:id/dismiss` · `/undismiss` | POST | mark `dismissed` / restore to `pending` |
 | `/api/candidates/:id` | DELETE | remove the item from the list now (the ✕ Clear action) |
-| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error, and per-channel `{ id, name, lastWatchedAt }` |
+| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error, and per-channel `{ id, name, watchingSince, paused }` |
 | `/api/watchers/:name/{pause,resume,run}` | POST | pause a watcher (persists `enabled:false`), resume it (persists `enabled:true`), or run one poll now |
-| `/api/watchers/:name/cursor` | POST | move a channel's "last watched" cursor: `{ channel, at }` (`at` = `"now"` or a date); clears that channel's tracked threads/seen |
+| `/api/watchers/:name/cursor` | POST | move a channel's "watch from" point: `{ channel, at }` (`at` = `"now"` or a date); clears that channel's tracked threads/seen |
+| `/api/watchers/:name/channel/{pause,resume}` | POST | pause / resume a single channel (`{ channel }`); a paused channel is skipped every poll, state kept |
 | `/api/watchers/{stop-all,start-all}` | POST | pause / resume every watcher at once |
 
 The SSE snapshot is `{sessions, candidates, caps:{maxConcurrent, maxPending}, now}` — the
@@ -355,7 +360,11 @@ watcher with no channels or no trigger users does not run — there is no "watch
 Each watcher declares:
 
 - `channels` — Slack channel IDs the bot has been invited to. **All listed channels are
-  scanned** (in parallel, each with its own independent cursor); it is not just the first.
+  scanned** (in parallel, each with its own independent cursor). Or the string **`"auto"`**
+  to **auto-discover** every channel the bot is a member of (via `users.conversations`,
+  paginated) and scan them all — invite the bot to a channel and it just appears, no config
+  edit. Discovery prefers public + private but degrades to public-only when the token lacks
+  `groups:read` (private channels also need `groups:history` to read anyway).
 - `trigger` — what makes a thread worth looking at. One type (the shape leaves room for
   `keyword`/`reaction` later):
   - `{ type: "mention", users:[…] }` — a channel thread qualifies when one of those users is
@@ -404,15 +413,21 @@ structurally cannot post.
 
 **Runtime & controls.** Each configured watcher is one entry in a `Map` (state ∈
 `running`/`paused`/`error`/`disabled`), so one can be controlled without touching the others or
-the dashboard. The **Watchers tab** shows each watcher's state, last poll, staged count, and last
-error, plus **each watched channel** with its friendly name and "last watched" time, with
-**Pause / Resume / Run-now** per watcher, a per-channel **⏱ set** (move the cursor), and
-**Stop-all / Start-all** globally. Pause/Resume **persist** to `watchers.json`
+the dashboard. The **Watchers tab** leads with liveness — a pulsing dot + a bright, relative
+**`polled <ago>`** on the meta line (the honest "is it alive" signal; polling is uniform across a
+watcher's channels). Each watched channel is a row: friendly name over **`checked <ago>`**
+(recent, so it reads as live) or **`paused`**, with a per-channel **pause/resume** toggle and a
+**⏱** control that shows/edits its fixed "watch from" start point (the row never shows that
+fixed point inline — a past timestamp there kept reading as staleness). **Watch all from now**
+sets every channel's start to now at once. Watcher-level **Pause / Resume / Run-now** and
+**Stop-all / Start-all** remain. Pause/Resume **persist** to `watchers.json`
 (`config.setEnabled` flips `enabled`, preserving all other fields) so they survive a restart; a
 paused watcher comes back paused. Status rides the SSE snapshot (`watchers` key) so the tab is
-live. A channel's pristine **first run baselines** (records its cursor, stages nothing) so an
-existing channel's backlog isn't dumped as candidates; only a saved cursor drives backfill on
-later runs.
+live. The **first time a channel is seen** it baselines to *now* and fetches **no** history —
+so nothing already posted (however recent, answered or not) is ever staged, and the first poll
+stays instant even across many auto-discovered channels. From then on each poll reads only
+`cursor→now` and advances the cursor to the newest message read, so a message is never re-read;
+after downtime the first read is just the missed window.
 
 The Slack client (`slack.js`) is coverage-excluded like the terminal backends (pure network),
 while the pipeline + control logic (`runWatcherOnce`, pause/resume, config/state/match/classify/repos)
