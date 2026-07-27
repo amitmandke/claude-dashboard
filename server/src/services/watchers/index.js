@@ -274,7 +274,25 @@ async function runWatcherOnce(watcher, deps) {
       const threadText = match.renderThread(thread);
       const prRefs = match.extractPrRefs(threadText);
       const intents = watcher.intents || [];
-      const plan = await classify({ threadText, prRefs, repos: knownRepos, skills: skillList, intents });
+
+      // Resolve the permalink first so the classifier can weave it into the
+      // hand-off prompt (best-effort — a missing link just omits that pointer).
+      let permalink;
+      try {
+        const link = await client.permalink({ channel, message_ts: threadId });
+        permalink = link.permalink;
+      } catch {
+        /* permalink is best-effort */
+      }
+
+      const plan = await classify({
+        threadText,
+        prRefs,
+        repos: knownRepos,
+        skills: skillList,
+        intents,
+        permalink,
+      });
 
       state.markSeen(name, channel, threadId, nowMs); // decided once, either way
 
@@ -302,23 +320,19 @@ async function runWatcherOnce(watcher, deps) {
         continue;
       }
 
-      let permalink;
-      try {
-        const link = await client.permalink({ channel, message_ts: threadId });
-        permalink = link.permalink;
-      } catch {
-        /* permalink is best-effort */
-      }
-
-      // Repo/prompt/reason: deterministic in intent + fallback modes; the model's
-      // own picks are used only in free mode.
+      // Repo: the model's own pick is trusted only in free mode; intent/fallback
+      // modes resolve it deterministically from the PR ref or the watcher default.
       const useModelPlan = !intents.length && !plan.unclassified;
       const cwd =
         (useModelPlan && resolveRepo(plan.repo)) ||
         (prRefs[0] && resolveRepo(prRefs[0].repo)) ||
         watcher.defaultCwd ||
         '';
-      const prompt = useModelPlan ? plan.prompt : launchPromptFrom({ threadText, prRefs, permalink });
+      // Prompt: prefer the model's crisp hand-off (now authored in intent mode too),
+      // and fall back to the deterministic thread dump when the model gave nothing
+      // usable (empty, or the unclassified path where no classify prompt was made).
+      const prompt =
+        (plan.prompt && plan.prompt.trim()) || launchPromptFrom({ threadText, prRefs, permalink });
       let reason;
       if (matchedIntent) reason = `Slack ${label} matched intent "${matchedIntent.name}"`;
       else if (plan.unclassified) reason = plan.reason;

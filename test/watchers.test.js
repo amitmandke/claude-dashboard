@@ -394,13 +394,16 @@ test('parseResult: extracts intent name (intent mode)', () => {
   assert.equal(classify.parseResult('{"intent":null}').intent, null);
 });
 
-test('buildPrompt: intent mode lists intents and asks only for intent+confidence', () => {
+test('buildPrompt: intent mode lists intents and asks for intent+prompt+confidence', () => {
   const p = classify.buildPrompt({
     threadText: 't', intents: [{ name: 'pr-review', description: 'review a PR' }],
+    permalink: 'https://slack/x',
   });
   assert.match(p, /pr-review: review a PR/);
-  assert.match(p, /"intent".*"confidence"/s);
-  assert.doesNotMatch(p, /"skill"/); // the model does not pick a skill in intent mode
+  assert.match(p, /"intent".*"prompt".*"confidence"/s);
+  assert.match(p, /crisp hand-off/); // the model now authors the launch prompt too
+  assert.match(p, /Slack thread link: https:\/\/slack\/x/); // permalink woven into context
+  assert.doesNotMatch(p, /"skill"/); // but it still does not pick a skill in intent mode
 });
 
 test('parseResult: null on non-JSON', () => {
@@ -607,9 +610,33 @@ test('runWatcherOnce: intent match → skill from config map, deterministic prom
   const c = candidates.added[0];
   assert.equal(c.skill, 'review-java'); // from the intent->skill map, not the model
   assert.equal(c.cwd, '/local/widgets'); // resolved from the PR link, not the model
-  assert.match(c.prompt, /Slack thread:/); // deterministic prompt, not model-authored
+  assert.match(c.prompt, /Slack thread:/); // deterministic fallback: model returned no prompt
   assert.match(c.prompt, /acme\/widgets#9/);
   assert.match(c.reason, /matched intent "pr-review"/);
+});
+
+test('runWatcherOnce: intent mode uses the model-authored prompt when present', async () => {
+  freshArmed();
+  const candidates = fakeCandidates();
+  const client = stubClient({
+    history: [{ ts: '100.1', text: 'hey <@U1> review github.com/acme/widgets/pull/9' }],
+    repliesByTs: { '100.1': [{ ts: '100.1', user: 'U2', text: 'hey <@U1> review github.com/acme/widgets/pull/9' }] },
+  });
+  const r = await loop.runWatcherOnce(INTENT_WATCHER, {
+    client, candidates,
+    // model names the intent AND drafts a crisp hand-off prompt
+    classify: async () => ({
+      intent: 'pr-review', confidence: 0.9,
+      prompt: 'Review acme/widgets#9 using the skill. Amit asked whether the retry loop is correct. AK-42 tracks it.',
+    }),
+    resolveRepo: (rr) => (rr === 'acme/widgets' ? '/local/widgets' : null),
+    retention: RETENTION, nowMs: 1000,
+  });
+  assert.equal(r.staged, 1);
+  const c = candidates.added[0];
+  assert.equal(c.skill, 'review-java'); // skill still from the config map, not the model
+  assert.match(c.prompt, /Amit asked whether the retry loop is correct/); // model's prompt used
+  assert.doesNotMatch(c.prompt, /Thread \(oldest first\)/); // not the raw thread dump
 });
 
 test('runWatcherOnce: intent mode — no matching intent is not staged', async () => {
