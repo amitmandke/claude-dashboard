@@ -95,6 +95,13 @@ a function testable, export it (several are exported solely for tests, noted as 
   window — that reads as tabs appearing out of nowhere) and holds a direct reference to
   the new session: right after creation, "current session of current window" can point
   elsewhere.
+- **A launch prompt is staged in a temp file, never typed inline.** Typing
+  `claude "<prompt>"` on the command line truncates a large prompt (the `write text` /
+  `do script` line limit), so `spawnSession` (iterm.js + appleTerminal.js) writes the
+  prompt to a `$TMPDIR/claude-dash-launch-*.txt` and builds `claude "$(cat <file>; rm -f
+  <file>)"` — the typed command stays short and the shell reads the full prompt, then the
+  file self-deletes. On osa failure the file is cleaned up in Node. Don't "simplify" this
+  back to an inline `quoted form of prompt`.
 - **Spawning while iTerm2 is not running must launch-and-wait first**: `iterm.js
   ensureAppRunning()` starts the app via `open -b` and polls a trivial AppleScript
   query until it round-trips; sending `create window` during app startup throws opaque

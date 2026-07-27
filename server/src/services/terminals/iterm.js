@@ -10,6 +10,9 @@
  */
 
 const { execFile } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const procEnv = require('./procEnv');
 
 // keys we can inject for menu/permission prompts
@@ -213,12 +216,20 @@ async function ensureAppRunning() {
  *  disruptive and looks like tabs appearing out of nowhere. */
 async function spawnSession(cwd, prompt) {
   await ensureAppRunning();
+  // A large prompt typed inline (`claude "…"`) overruns iTerm's write-text/line
+  // limit and lands truncated. Stage it in a temp file instead and have the shell
+  // read + delete it, so the TYPED command stays short regardless of prompt size.
+  let pf = '';
+  if (prompt) {
+    pf = path.join(os.tmpdir(), `claude-dash-launch-${process.pid}-${Date.now()}.txt`);
+    fs.writeFileSync(pf, prompt, 'utf8');
+  }
   const script = `
 on run argv
   set dir to item 1 of argv
-  set p to item 2 of argv
+  set pf to item 2 of argv
   set cmd to "cd " & quoted form of dir & " && claude"
-  if p is not "" then set cmd to cmd & " " & quoted form of p
+  if pf is not "" then set cmd to cmd & " " & quote & "$(cat " & quoted form of pf & "; rm -f " & quoted form of pf & ")" & quote
   tell application "iTerm2"
     activate
     set newWindow to (create window with default profile)
@@ -238,8 +249,17 @@ on run argv
     return tty of target
   end tell
 end run`;
-  const tty = await runOsa(script, [cwd, prompt || '']);
-  if (!tty.startsWith('/dev/')) throw new Error('failed to open a new iTerm2 session: ' + tty);
+  let tty;
+  try {
+    tty = await runOsa(script, [cwd, pf]);
+  } catch (e) {
+    if (pf) { try { fs.unlinkSync(pf); } catch { /* best effort */ } }
+    throw e;
+  }
+  if (!tty.startsWith('/dev/')) {
+    if (pf) { try { fs.unlinkSync(pf); } catch { /* best effort */ } }
+    throw new Error('failed to open a new iTerm2 session: ' + tty);
+  }
   return tty;
 }
 

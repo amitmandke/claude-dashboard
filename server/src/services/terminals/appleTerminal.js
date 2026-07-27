@@ -11,6 +11,9 @@
  */
 
 const { execFile } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const procEnv = require('./procEnv');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -146,20 +149,36 @@ end run`;
 }
 
 async function spawnSession(cwd, prompt) {
+  // Stage a large prompt in a temp file (same reason as the iTerm backend): a
+  // long inline `claude "…"` overruns the do-script line limit and truncates.
+  let pf = '';
+  if (prompt) {
+    pf = path.join(os.tmpdir(), `claude-dash-launch-${process.pid}-${Date.now()}.txt`);
+    fs.writeFileSync(pf, prompt, 'utf8');
+  }
   const script = `
 on run argv
   set dir to item 1 of argv
-  set p to item 2 of argv
+  set pf to item 2 of argv
   set cmd to "cd " & quoted form of dir & " && claude"
-  if p is not "" then set cmd to cmd & " " & quoted form of p
+  if pf is not "" then set cmd to cmd & " " & quote & "$(cat " & quoted form of pf & "; rm -f " & quoted form of pf & ")" & quote
   tell application "Terminal"
     activate
     do script cmd
   end tell
   return "ok"
 end run`;
-  const result = await runOsa(script, [cwd, prompt || '']);
-  if (result !== 'ok') throw new Error('failed to open a new Terminal.app window');
+  let result;
+  try {
+    result = await runOsa(script, [cwd, pf]);
+  } catch (e) {
+    if (pf) { try { fs.unlinkSync(pf); } catch { /* best effort */ } }
+    throw e;
+  }
+  if (result !== 'ok') {
+    if (pf) { try { fs.unlinkSync(pf); } catch { /* best effort */ } }
+    throw new Error('failed to open a new Terminal.app window');
+  }
 }
 
 module.exports = { sendText, sendKey, focus, closePane, readScreen, sessionTitle, spawnSession };
