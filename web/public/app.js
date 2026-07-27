@@ -672,6 +672,9 @@ function candLinks(c) {
   return out;
 }
 
+// candidate ids whose prompt the user has expanded — survives SSE re-renders
+const expandedCandPrompts = new Set();
+
 function buildCandidate(c, ctx) {
   const card = candTemplate.content.cloneNode(true).querySelector('.cand-card');
   card.dataset.status = c.status;
@@ -707,9 +710,17 @@ function buildCandidate(c, ctx) {
   const toggle = () => {
     const open = promptEl.classList.toggle('expanded');
     moreBtn.textContent = open ? '▴ less' : '▾ more';
+    if (open) expandedCandPrompts.add(c.id); else expandedCandPrompts.delete(c.id);
   };
   promptEl.addEventListener('click', toggle);
   moreBtn.addEventListener('click', toggle);
+  // the SSE snapshot rebuilds every card each tick — restore a prompt the user
+  // had expanded so it doesn't snap shut a second after they click "more".
+  if (expandedCandPrompts.has(c.id)) {
+    promptEl.classList.add('expanded');
+    moreBtn.textContent = '▴ less';
+    moreBtn.hidden = false;
+  }
   // reveal the "more" toggle only when the text actually overflows the clamp
   requestAnimationFrame(() => {
     if (promptEl.scrollHeight - promptEl.clientHeight > 4) moreBtn.hidden = false;
