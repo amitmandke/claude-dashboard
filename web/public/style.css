@@ -309,7 +309,7 @@ main {
 .rename-btn { opacity: 0; width: 24px; }
 .card:hover .rename-btn { opacity: 1; }
 .rename-btn:focus { opacity: 1; }
-.expand-btn:hover, .focus-btn:hover { color: var(--accent); background: var(--neutral-btn); }
+.expand-btn:hover { color: var(--accent); background: var(--neutral-btn); }
 
 /* --- expanded card: large centered overlay; collapses back into the grid --- */
 .card-backdrop {
@@ -459,6 +459,12 @@ main {
 .card[data-status="busy"] .esc-btn:hover { border-color: var(--waiting); filter: brightness(1.15); }
 .send-btn:hover { filter: brightness(1.1); }
 .send-btn:disabled { opacity: .5; cursor: default; }
+/* "Open in iTerm" lives in the composer footer (a neutral action, not the header) */
+.focus-btn {
+  background: var(--neutral-btn); border: 1px solid var(--card-edge); color: var(--text);
+  border-radius: 9px; padding: 8px 12px; font-size: 13px; cursor: pointer; white-space: nowrap;
+}
+.focus-btn:hover { background: var(--neutral-btn-hover); border-color: var(--hover-edge); }
 
 .toast {
   position: fixed;
@@ -975,6 +981,10 @@ dialog input:focus, dialog textarea:focus { border-color: var(--accent); }
 .cand-prompt:not(.expanded) {
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
 }
+/* expanded = full prompt in a capped, scrollable box (card doesn't blow up) */
+.cand-prompt.expanded { max-height: 260px; overflow-y: auto; cursor: auto; }
+.cand-prompt.expanded::-webkit-scrollbar { width: 9px; }
+.cand-prompt.expanded::-webkit-scrollbar-thumb { background: var(--card-edge); border-radius: 5px; border: 2px solid var(--inset); }
 .cand-prompt-more { padding: 2px 7px; font-size: 11px; align-self: flex-end; }
 
 .cand-meta {
