@@ -30,32 +30,53 @@ let queue = Promise.resolve(); // generations run strictly one at a time
  *    intent by name (or none); the skill is decided by config, not the model.
  *  - free mode: the model judges actionability and picks a skill from `skills`.
  */
-function buildPrompt({ threadText, prRefs = [], repos = [], skills = [], intents = [] }) {
+// Shared spec for the `prompt` field the model emits — the instruction handed to
+// a fresh Claude session at launch. Deliberately a LIGHT hand-off, not a rich
+// pre-solved brief: the skill supplies the *how* (it investigates at launch, and
+// stays fresh); this prompt supplies only the *what* and the pointers to reach it.
+// Pre-baking a diff summary or a findings table here would just duplicate the
+// launched session's own work and go stale as the PR moves.
+const PROMPT_FIELD =
+  '"prompt": "<the instruction to hand a fresh Claude session that will do this work using the skill>"';
+const PROMPT_RULES =
+  'Write "prompt" as a crisp hand-off, not a solution:\n' +
+  '  1. Say plainly what is being asked, in one or two sentences drawn from the thread — the human\'s actual request, not a paraphrase of every message.\n' +
+  '  2. List the concrete pointers to investigate: PR links, Jira ticket IDs (e.g. AK-12345), repo names, and the Slack thread link.\n' +
+  '  3. Do NOT pre-solve: never summarize a diff you have not read, invent findings, or restate the skill\'s own steps. The skill investigates at launch.\n' +
+  '  Keep it under ~120 words.\n';
+
+function buildPrompt({ threadText, prRefs = [], repos = [], skills = [], intents = [], permalink = '' }) {
   const repoLine = repos.length ? repos.join(', ') : '(none discovered)';
   const prLine = prRefs.length
     ? prRefs.map((r) => `${r.repo}#${r.number}`).join(', ')
     : '(no PR links in the thread)';
+  const linkLine = permalink ? `Slack thread link: ${permalink}\n` : '';
   const head =
     'You triage a Slack thread that mentioned a specific engineer, to decide whether it is ' +
     'real work for them versus social chatter, an FYI, or an already-resolved discussion.\n\n';
   const context =
     `PR references detected: ${prLine}\n` +
-    `Known repos (owner/repo): ${repoLine}\n\n` +
-    `Thread (oldest first):\n${threadText}`;
+    `Known repos (owner/repo): ${repoLine}\n` +
+    linkLine +
+    `\nThread (oldest first):\n${threadText}`;
 
   if (intents.length) {
-    // Intent mode: the model's ONLY job is to name a matching intent. The skill,
-    // repo, launch prompt and reason are all derived deterministically by the
-    // caller — the model does not choose them.
+    // Intent mode: the model names a matching intent AND drafts the launch prompt.
+    // The skill, repo and reason are still derived deterministically by the caller
+    // (the model does not choose the skill) — but the prompt is model-authored now,
+    // because a crisp "what's being asked + pointers" hand-off beats the old raw
+    // thread-text dump. `launchPromptFrom` stays as the deterministic fallback.
     const intentLines = intents.map((it) => `- ${it.name}: ${it.description || ''}`.trim()).join('\n');
     return (
       head +
       'Match the thread to exactly ONE of these intents, or null if none is actionable work for them:\n' +
       `${intentLines}\n\n` +
       'Reply with ONLY a JSON object, no prose, no code fences:\n' +
-      '{"intent": "<intent-name>"|null, "confidence": 0.0-1.0}\n\n' +
-      'Rules: "intent" MUST be exactly one of the names listed above, or null. Judge only which ' +
-      'intent (if any) fits — nothing else.\n\n' +
+      `{"intent": "<intent-name>"|null, ${PROMPT_FIELD}, "confidence": 0.0-1.0}\n\n` +
+      'Rules: "intent" MUST be exactly one of the names listed above, or null. If none fits, set ' +
+      'intent to null and "prompt" may be empty.\n' +
+      PROMPT_RULES +
+      '\n' +
       context
     );
   }
@@ -65,12 +86,13 @@ function buildPrompt({ threadText, prRefs = [], repos = [], skills = [], intents
     head +
     'Reply with ONLY a JSON object, no prose, no code fences:\n' +
     '{"actionable": true|false, "repo": "owner/repo"|null, "skill": "<skill-name>"|null, ' +
-    '"prompt": "<what the launched session should do>", "reason": "<one line: why this is for them>", ' +
+    `${PROMPT_FIELD}, "reason": "<one line: why this is for them>", ` +
     '"confidence": 0.0-1.0}\n\n' +
     'Rules: pick "repo" from a PR link if present, else from the repo the thread is clearly about, ' +
-    'else null. Pick "skill" ONLY from the list below (or null if none fits). Keep "prompt" concrete ' +
-    'and self-contained. If not actionable, set "actionable": false and the other fields may be null.\n\n' +
-    `Available skills:\n${skillLines || '(none)'}\n\n` +
+    'else null. Pick "skill" ONLY from the list below (or null if none fits). If not actionable, set ' +
+    '"actionable": false and the other fields may be null.\n' +
+    PROMPT_RULES +
+    `\nAvailable skills:\n${skillLines || '(none)'}\n\n` +
     context
   );
 }
@@ -106,13 +128,15 @@ function parseResult(raw) {
  * the mention anyway (never drop it) as unclassified, so the user decides. Uses
  * the first detected PR ref as a repo hint when there is one.
  */
-function fallbackPlan({ threadText, prRefs = [] }) {
+function fallbackPlan({ prRefs = [] }) {
   return {
     actionable: true,
     intent: null,
     repo: prRefs[0] ? prRefs[0].repo : null,
     skill: '',
-    prompt: threadText.slice(0, 500),
+    // Leave prompt empty so the caller falls back to launchPromptFrom, which
+    // carries the permalink + PR refs the raw thread slice would drop.
+    prompt: '',
     reason: '(unclassified — Slack thread mentioning you; classifier unavailable)',
     confidence: 0,
     unclassified: true,

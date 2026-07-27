@@ -395,11 +395,17 @@ tab falls back to showing the raw channel id.
 match it to an intent via `classify.js` (headless `claude -p --model haiku`, reusing the
 `aiTitles.js` machinery: subscription-billed, no API key, run hidden in `~/.claude-dashboard/headless`
 with `CLAUDE_DASH_INTERNAL=1`, one-at-a-time with a failure fallback) → if an intent matches,
-**stage a candidate**. The skill comes from the intent map; the **repo (`cwd`), launch
-prompt, and reason are derived deterministically** (repo from PR links via `repos.js`
-auto-discovered from git remotes, falling back to the watcher's optional `action.cwd`; prompt
-= a link back + PR refs + the thread text) — the LLM does not author them. If the classifier is unavailable the thread is still staged as
-*unclassified* (never dropped) for you to fill in. Dedupe is keyed by `channel:thread_ts`, so
+**stage a candidate**. The skill comes from the intent map, and the **repo (`cwd`) and reason are
+derived deterministically** (repo from PR links via `repos.js` auto-discovered from git remotes,
+falling back to the watcher's optional `action.cwd`). The **launch prompt is model-authored** in
+the same classify call — a crisp "what's being asked + PR/Jira/thread pointers" hand-off, kept
+deliberately *light*: it points the launched session at the work but does not pre-solve it
+(investigation lives in the skill, which runs fresh at launch, so pre-baking a diff summary would
+only duplicate that work and go stale). The classify call itself stays tool-less and read-only —
+it reasons only over the thread text it's handed, never calling `gh` or MCP. `launchPromptFrom`
+(a link back + PR refs + thread text) remains the deterministic fallback when the model returns no
+usable prompt. If the classifier is unavailable the thread is still staged as
+*unclassified* (never dropped, deterministic prompt) for you to fill in. Dedupe is keyed by `channel:thread_ts`, so
 socket/poll overlap or a re-scan never double-stages, and a decided thread (matched or not) is
 marked `seen` so it isn't re-classified.
 
@@ -446,7 +452,7 @@ is unit-tested against a stub client and an injected timer.
 - **Dark and light themes via CSS variables only** — every color in `style.css` lives in a variable on `:root` (dark, the default) with a complete counterpart under `[data-theme="light"]`; no rule hardcodes a color. The header toggle cycles three modes — 🌗 auto (follows `prefers-color-scheme` live, so scheduled OS day/night switching works), ☀️ light, 🌙 dark — flipping `data-theme` on `<html>`. Auto is the default (nothing stored); an explicit choice persists in `localStorage`, and an inline `<head>` script applies the resolved theme before the stylesheet loads (no flash). The reply popup follows the "Markdown Reader" extension's matching theme pair (one-dark / one-light). Deliberate exception: the terminal mirror stays dark in both themes — it mirrors a real terminal pane.
 - **Subagent (sidechain) events filtered out** of the feed — keeps the action feed readable; the main-chain Agent tool call still shows.
 - **Candidates are inert data, launched explicitly** — a candidate is a stored plan, not a running thing; the producer API (`POST /api/candidates`) can't make anything spawn on its own, so a session or external tool proposing work never bypasses your review. Launch reuses the exact `/sessions/new` validation + spawn path (no second way to start a session), and is gated by `maxConcurrent` — counted over **actively-working** sessions (busy/waiting), not idle/turn-complete windows, so it caps *load* rather than open windows (default is a high backstop) — so a backlog can't flood the machine; `maxPending` bounds the list (adds past it are rejected and logged, never silently dropped). The list is a single JSON file written atomically by the one event loop — same single-writer pattern as titles/AI-titles, no locking. **In-page tabs, not a second page**: the Candidates view shares the one SSE stream, theme, and toast plumbing — it's a view toggle, so launching a candidate and watching it become a live card stays within one app.
-- **Slack watchers poll (never Socket Mode), and the LLM only matches an intent** — polling with a persistent cursor backfills anything posted while the machine was asleep; a real-time socket would silently drop exactly those events, so it was rejected for an intermittently-running tool. And the classifier is scoped as narrowly as possible: it names a configured intent (or none) and nothing else — the skill comes from the config map and the repo/prompt are derived deterministically — so what launches stays under explicit user control, not model whim. Read-only scopes mean a watcher can never post.
+- **Slack watchers poll (never Socket Mode), and the LLM only matches an intent** — polling with a persistent cursor backfills anything posted while the machine was asleep; a real-time socket would silently drop exactly those events, so it was rejected for an intermittently-running tool. And the classifier is scoped as narrowly as possible: it names a configured intent (or none) — the skill comes from the config map and the repo/reason are derived deterministically, so *what* launches (which skill, which repo) stays under explicit user control, not model whim. The classifier also drafts the launch prompt, but that only shapes the *hand-off text* the session reads, not the skill/repo decision, and it's tool-less (thread text only). Read-only scopes mean a watcher can never post.
 - **`reply` vs `done` is a heuristic** — question detection plus the undelivered-deliverable check. Side-effect matching is deliberately invocation-shaped (`git push`, `gh pr comment`) rather than word-shaped: "show PR commits" must not count as a delivery. It can still misclassify; the cost of an error is just a wrong tile/animation, and the banner shows the actual closing text so the user can judge.
 
 ## 7. Possible future extensions

@@ -185,10 +185,18 @@ a function testable, export it (several are exported solely for tests, noted as 
   on `missing_scope` (no `groups:read`) — don't drop the degrade, most bots are public-only.
   Discovered channels flow into the same per-channel scan; `getStatus`/`setChannelCursor` union
   config channels with `state.channelsOf(name)` so discovered ones show up and are editable.
-- **The watcher classifier only matches an intent** — its sole output is a configured intent
-  name (→ skill from the `intents` map). Repo, launch prompt, and reason are derived
-  deterministically in `runWatcherOnce`; don't push those decisions back into the LLM. Keep
-  scopes read-only (no `chat:write`) — the watcher must never be able to post.
+- **The watcher classifier matches an intent AND drafts the launch prompt** — in intent mode
+  its outputs are the intent name (→ skill from the `intents` map) *and* a crisp `prompt` (the
+  hand-off given to the launched session). Skill, repo, and reason are still derived
+  deterministically in `runWatcherOnce` — don't push *those* back into the LLM. But the prompt is
+  model-authored (in both modes), because a clean "what's being asked + PR/Jira/thread pointers"
+  beats the old raw thread dump; `launchPromptFrom` remains the deterministic fallback when the
+  model returns nothing usable. The prompt is deliberately a **light hand-off, not a pre-solved
+  brief** — investigation smarts (large-diff handling, prior-review checks) belong in the *skill*,
+  which runs fresh at launch; pre-baking them here just duplicates the launched session's work and
+  goes stale as the PR moves. The classify call stays tool-less/read-only (no `gh`, no MCP) — it
+  only reads the thread it's handed. Keep scopes read-only (no `chat:write`) — the watcher must
+  never be able to post.
 - **Watcher token via env only** — `watchers.json` stores `"$SLACK_BOT_TOKEN"`, resolved from
   the environment; never write a real `xoxb-` token into config or the repo. The launchd agent
   doesn't inherit an interactive shell, so the token must be in the plist's
