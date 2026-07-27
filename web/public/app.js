@@ -610,6 +610,7 @@ setView(location.hash.slice(1) || 'sessions');
 // fields that matter (skill, prompt, reason, directory, source). The full list
 // is already in the snapshot, so this is pure frontend — no server round-trip.
 let candFilter = '';
+let lastCandSig = null; // signature of the last candidate render — skip rebuilds when unchanged
 const candFilterEl = document.getElementById('cand-filter');
 candFilterEl.addEventListener('input', () => {
   candFilter = candFilterEl.value;
@@ -788,6 +789,14 @@ function renderCandidates(data) {
   // not idle/turn-complete windows.
   const liveCount = (data.sessions || []).filter((s) => s.status === 'busy' || s.derivedStatus === 'waiting').length;
   const atCap = caps.maxConcurrent != null && liveCount >= caps.maxConcurrent;
+
+  // The SSE snapshot fires every tick even when candidates haven't changed;
+  // rebuilding the grid then would reset scroll/expansion mid-read. Skip the
+  // rebuild unless something that affects the rendered output actually changed.
+  const sig = JSON.stringify(list) + '|' + atCap + '|' + candFilter;
+  if (sig === lastCandSig) return;
+  lastCandSig = sig;
+
   const pending = list.filter((c) => c.status === 'pending');
 
   const badge = document.getElementById('cand-badge');
