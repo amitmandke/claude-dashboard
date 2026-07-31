@@ -28,10 +28,11 @@ turns (cache: `~/.claude-dashboard/ai-titles.json`); precedence is ✎ custom ti
 - `server/src/` — `index.js` (entry), `config.js`, `routes/` (api, static),
   `services/` (sessionRegistry, transcript, customTitles, aiTitles, projects, skills,
   `candidates/store.js` = the launchable candidate list,
-  `watchers/` = Slack watcher candidate producer (index=poll loop, config, state,
-  slack, repos, match, classify),
+  `watchers/` = candidate producers, trigger→candidates (index=poll loop, config
+  = schema v2 + v1 migration, state, slack, repos, match, classify),
   `terminals/` = dispatcher + procEnv + iterm + appleTerminal + tmux), `utils/fsio.js`
-- `watchers.example.json` — template for `~/.claude-dashboard/watchers.json` (placeholders only)
+- `watchers.example.json` — template for `~/.claude-dashboard/watchers.json` (placeholders only;
+  schema v2). `docs/` (git-ignored) holds `proposals.md` + the approved `watchers-mock.html`
 - `web/public/` — `index.html`, `app.js`, `md.js` (minimal markdown renderer for the
   full-reply popup), `dialog.js` (parses the permission-dialog options out of the
   mirrored screen so quick actions send the right digit), `launch.html` (clickable
@@ -197,8 +198,53 @@ a function testable, export it (several are exported solely for tests, noted as 
   goes stale as the PR moves. The classify call stays tool-less/read-only (no `gh`, no MCP) — it
   only reads the thread it's handed. Keep scopes read-only (no `chat:write`) — the watcher must
   never be able to post.
-- **Watcher token via env only** — `watchers.json` stores `"$SLACK_BOT_TOKEN"`, resolved from
-  the environment; never write a real `xoxb-` token into config or the repo. The launchd agent
+- **`watchers.json` is schema v2, and v1 is migrated in memory — never on disk.** `config.js`
+  entry points (`normalize`, `normalizeWatcher`, `normalizeTrigger`, `normalizeRules`) each run
+  the idempotent `migrateWatcherRaw`/`migrateRaw` on their input first, so v1 and v2 raw both
+  work everywhere and the user's hand-written file is never rewritten just to upgrade it
+  (`load()` reports the on-disk `fileVersion`). v2 = `slack.bots.<ref>` + `trigger.type`
+  (`slack`|`schedule`) + `trigger.mentions`/`channels`/`botRef` + when→then `rules[]` with
+  `action:{type:'skill'|'prompt'}`. The runner and `classify.js` still speak v1 intent→skill, so
+  normalized watchers carry **alias fields** (`mentionUsers`, `trigger.users`, `intents` derived
+  from `rules`) — that alias layer is the seam to delete when those two learn `rules`; don't add
+  new readers of it. `normalize()` hands the Slack poll loop **only `slack` watchers**;
+  a valid `schedule` watcher lands in `disabled` (reason: not implemented) and in `all` (the
+  full normalized list, for the future management UI) — the runner can't be handed a trigger it
+  can't execute. Every config write path calls `backupOnce` (one-time `watchers.json.bak`) and
+  `writeJsonAtomic`; a file-loss scare is why.
+- **`repos.listCheckouts` keeps duplicates on purpose; `buildMap` collapses them.** The map is
+  `owner/repo → one dir` (preferDir breaks the tie), so it can't enumerate the *other* copies of a
+  twice-cloned repo — that needs the pre-collapse list, which is why `create()` caches both from one
+  filesystem walk and `dirs()` (the editor's folder picker) reads the list, not the map.
+- **A watcher's `action.preferCheckout` is inert — the env var is what works.** `buildDeps` builds
+  the repo map with `preferDir: config.WATCHERS_PREFER_CHECKOUT` (`CLAUDE_DASH_PREFER_CHECKOUT`);
+  nothing reads the per-watcher key, so `config.js` normalizes/preserves it but the editor
+  deliberately doesn't offer it. Wire it through `buildDeps` (per-watcher repo map) before
+  advertising it in the UI.
+- **The Watchers tab shows every configured watcher, runnable or not** — `start()`/`reconcile()`
+  create entries for `cfg.disabled` too (`entryFromDisabled`: `paused` when just `enabled:false`,
+  else `disabled` + reason). Config-only card data (rule count; a schedule watcher's
+  prompt/interval, which never reach the poll loop) comes from the module-level `configMeta` map:
+  **call `noteConfigMeta(cfg)` at every site that re-reads config** (`start`, `reconcile`,
+  `resume`, `startAll`) — never from `getStatus`, which runs on every SSE tick. The editor dialog
+  sets `watchEditOpen` so the SSE re-render can't rebuild the form mid-edit, and its patch omits
+  `enabled` so editing a paused watcher leaves it paused.
+- **Watcher edits are merge-don't-replace, validated before the write, and reconciled live.**
+  `config.saveWatcher` patches only editor-owned keys (`name`/`enabled`/`trigger`/`rules`/
+  `prompt`/`poll`/`action`, nested blocks merged shallowly) so hand-written extras and `//`
+  comments survive; it normalizes the merged watcher **as if enabled** and refuses to write one
+  that couldn't run (the UI gets the fail-closed reason — a rejected save doesn't even create the
+  `.bak`); an editor save *does* upgrade the file to v2 while `setEnabled` (pause/resume)
+  deliberately does not. `watchers.upsertWatcher`/`removeWatcher` then call `reconcile(name)`,
+  which re-reads config and syncs **only that watcher's** Map entry (running / paused /
+  disabled+reason / gone) — never restart the whole loop for an edit. Cursors in
+  `watchers-state.json` are keyed by watcher name and are NOT dropped on delete/rename, so
+  re-creating a name resumes from where it left off. `/api/watchers/:name` is matched last and
+  guarded by `RESERVED_WATCHER_PATHS` so `config`/`bots`/`channels`/`stop-all`/`start-all` can
+  never be read as a watcher name.
+- **Watcher token via a reference only** — `watchers.json` stores `slack.bots.<ref>.token` as
+  `"$SLACK_BOT_TOKEN"` / `"keychain:<service>"` / `"@/path"`, resolved at load;
+  never write a real `xoxb-` token into config or the repo. The launchd agent
   doesn't inherit an interactive shell, so the token must be in the plist's
   `EnvironmentVariables` (or a sourced file) for the live dashboard to see it.
 - `slack.js` is coverage-excluded (pure network, like the terminal backends); the rest of the

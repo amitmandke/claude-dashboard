@@ -1,34 +1,69 @@
 {
-  "//": "Copy to ~/.claude-dashboard/watchers.json and fill in real IDs. This file is a template with placeholders only. The bot token is read from an env var (see 'botToken'), never stored here.",
+  "//": "Copy to ~/.claude-dashboard/watchers.json and fill in real IDs. This file is a template with placeholders only. Bot tokens are read from a reference (env var / Keychain / file), never stored here.",
 
+  "//version": "Schema version. A pre-v2 file (top-level slack.botToken, trigger.type 'mention', watcher.channels, intents[]) is migrated in memory at load time and keeps working as-is — nothing rewrites it.",
+  "version": 2,
+
+  "//slack.bots": "One entry per Slack bot, keyed by a ref a watcher points at via trigger.botRef ('default' when omitted). 'token' is a REFERENCE: '$ENV_VAR', 'keychain:<service>[:<account>]' (macOS Keychain, preferred), or '@/abs/path' to a chmod-600 file. A bare string is shorthand for { token }. 'label' is only for display.",
   "slack": {
-    "botToken": "$SLACK_BOT_TOKEN"
+    "bots": {
+      "default": { "token": "$SLACK_BOT_TOKEN", "label": "my-dashboard-bot" }
+    }
   },
 
   "watchers": [
     {
+      "//": "A Slack watcher: poll the bot's channels; a thread matching a rule stages a candidate.",
       "name": "mentions",
       "enabled": true,
 
-      "//channels": "Slack channel IDs (the bot must be invited to each) OR the string \"auto\" to auto-discover every channel the bot is a member of. ALL are scanned, in parallel, each with its own cursor. Fail-closed: empty array = the watcher does not run. Friendly names (#channel) need the read-only channels:read/groups:read scope; otherwise the id is shown.",
-      "channels": ["C0123ABCD", "C0456WXYZ"],
-      "//channels-auto": "Alternatively: \"channels\": \"auto\"",
+      "//trigger": "type 'slack' — a thread qualifies when one of 'mentions' is @-mentioned anywhere in it (including a late reply); 'mentions' is required and non-empty (fail-closed). 'channels' are Slack channel IDs the bot has been invited to (ALL are scanned, in parallel, each with its own cursor) OR the string \"auto\" to auto-discover every channel the bot is a member of. Friendly names (#channel) need the read-only channels:read/groups:read scope; otherwise the id is shown.",
+      "trigger": {
+        "type": "slack",
+        "botRef": "default",
+        "channels": ["C0123ABCD", "C0456WXYZ"],
+        "mentions": ["U0456EFGH"]
+      },
+      "//trigger-channels-auto": "Alternatively: \"channels\": \"auto\"",
 
-      "//trigger": "What makes a thread worth looking at. Only 'mention' is implemented: a thread qualifies when one of these users is @-mentioned anywhere in it (including a late reply). Required, non-empty.",
-      "trigger": { "type": "mention", "users": ["U0456EFGH"] },
-
-      "//intents": "Your intent -> skill map. The classifier matches a qualifying thread to ONE named intent (or none); the skill comes from this map, not from the model. Empty list = the model picks a skill freely (looser).",
-      "intents": [
-        { "name": "pr-review", "description": "asked to review a pull request", "skill": "review-service" },
-        { "name": "bug", "description": "a bug, failure, or regression to investigate", "skill": "debug-service" }
+      "//rules": "Your when -> then map. The classifier matches a qualifying thread to ONE named rule (or none); the action comes from this map, not from the model. 'about' is what the rule matches, in plain words. action.type is 'skill' (runs that skill) or 'prompt' (schema-ready; the runner treats it as no skill for now). Empty list = the model picks a skill freely (looser).",
+      "rules": [
+        {
+          "name": "pr-review",
+          "about": "asked to review a pull request",
+          "action": { "type": "skill", "skill": "review-service" }
+        },
+        {
+          "name": "bug",
+          "about": "a bug, failure, or regression to investigate",
+          "action": { "type": "skill", "skill": "debug-service" }
+        }
       ],
 
       "//poll": "How often to poll (seconds; floored at 30). A persistent cursor backfills anything missed while the machine was asleep.",
       "poll": { "everySeconds": 120 },
 
-      "//action.preferCheckout": "When a repo is checked out under more than one parent folder, prefer the one whose parent folder has this name. Repos are auto-discovered from git remotes under the codebase dir.",
+      "//action.preferCheckout": "NOT YET HONORED per watcher — the tie-break the runner uses comes from the CLAUDE_DASH_PREFER_CHECKOUT env var. Accepted and preserved here for when it is wired through. Meaning: when a repo is checked out under more than one parent folder, prefer the one whose parent folder has this name.",
       "//action.cwd": "Optional fallback target folder. A candidate's cwd is normally derived from a PR link in the message; if none resolves, this folder is used so the candidate is still launchable. Omit to leave such candidates without a cwd.",
       "action": { "preferCheckout": "myorg", "cwd": "/Users/me/codebase/scratch" }
+    },
+
+    {
+      "//": "A scheduled prompt watcher: NOT RUN YET (schema + validation only — the runner executes 'slack' triggers today; see docs/proposals.md Proposal 6). It is reported in the Watchers tab as not-implemented rather than silently ignored.",
+      "name": "morning-pr-sweep",
+      "enabled": false,
+
+      "//trigger": "type 'schedule' — one of everyMinutes / at (\"HH:MM\", means daily) / cron.",
+      "trigger": { "type": "schedule", "everyMinutes": 1440, "at": "09:00" },
+
+      "//skill": "Optional. The producer session starts as /<skill> with 'prompt' as its arguments; omit or leave empty to run the prompt on its own.",
+      "skill": "",
+
+      "//prompt": "The producing task. The watcher appends a 'report done / what blocked' step and a run token automatically; the session only stages candidates — launching one stays your click.",
+      "prompt": "Check my review-requested pull requests. For each new one, stage a candidate with the right review skill and a precise brief. If a tool is unauthenticated or you need a decision you can't safely make, stop and say exactly what is blocking.",
+
+      "//action.cwd": "The folder the producer session opens in, and the fallback for a candidate it stages without a resolvable repo.",
+      "action": { "cwd": "/Users/me/codebase" }
     }
   ]
 }

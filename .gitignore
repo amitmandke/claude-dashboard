@@ -5,3 +5,5 @@ node_modules/
 # Staging area for not-yet-built proposals; graduates into DESIGN.md when built.
 # Intentionally untracked — never commit it (see CLAUDE.md).
 docs/proposals.md
+# Local design mocks (frontend-design skill output) — not part of the shipped app.
+docs/*-mock.html

@@ -162,32 +162,61 @@ test('normalizeWatcher: dedupes, floors poll interval, accepts mentionUsers alia
   assert.equal(n.everySeconds, wconfig.MIN_POLL_SECONDS);
 });
 
+// A v1 `mention` trigger normalizes to the v2 `slack` shape (`users` stays as an
+// alias of `mentions` for the shipped runner).
+const slackTrigger = (mentions, extra = {}) => ({
+  type: 'slack', botRef: 'default', mentions, users: mentions, channels: [], discover: false, ...extra,
+});
+
 test('normalizeTrigger: explicit mention users, legacy fallback, unsupported type', () => {
-  assert.deepEqual(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: ['U1'] } }), {
-    type: 'mention', users: ['U1'],
-  });
-  // legacy top-level users still build a mention trigger
-  assert.deepEqual(wconfig.normalizeTrigger({ users: ['U9'] }), { type: 'mention', users: ['U9'] });
+  assert.deepEqual(
+    wconfig.normalizeTrigger({ trigger: { type: 'mention', users: ['U1'] } }),
+    slackTrigger(['U1'])
+  );
+  // legacy top-level users still build a slack trigger
+  assert.deepEqual(wconfig.normalizeTrigger({ users: ['U9'] }), slackTrigger(['U9']));
   assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'reaction' } }).error, 'unsupported type errors');
   assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: [] } }).error, 'no users errors');
 });
 
-test('normalizeTrigger: only mention is supported; unknown types are rejected', () => {
-  assert.deepEqual(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: ['U1'] } }), {
-    type: 'mention', users: ['U1'],
-  });
+test('normalizeTrigger: slack + schedule are supported; unknown types are rejected', () => {
+  assert.deepEqual(
+    wconfig.normalizeTrigger({ trigger: { type: 'slack', mentions: ['U1'] } }),
+    slackTrigger(['U1'])
+  );
   assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'dm', users: ['U1'] } }).error, 'dm no longer supported');
   assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'mention', users: [] } }).error, 'mention needs users');
 });
 
-test('normalizeWatcher: a mention trigger requires channels (fail-closed)', () => {
+test('normalizeTrigger: schedule needs an interval/time/cron and a valid HH:MM', () => {
+  assert.deepEqual(wconfig.normalizeTrigger({ trigger: { type: 'schedule', everyMinutes: 30 } }), {
+    type: 'schedule', everyMinutes: 30, at: '', cron: '',
+  });
+  // `at` alone means daily
+  assert.deepEqual(wconfig.normalizeTrigger({ trigger: { type: 'schedule', at: '09:00' } }), {
+    type: 'schedule', everyMinutes: 1440, at: '09:00', cron: '',
+  });
+  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'schedule' } }).error, 'needs one of the three');
+  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'schedule', at: '9am' } }).error, 'bad time errors');
+  assert.ok(wconfig.normalizeTrigger({ trigger: { type: 'schedule', at: '24:00' } }).error, 'out-of-range time errors');
+});
+
+test('normalizeTrigger: explicit botRef and channel list carry through', () => {
+  const t = wconfig.normalizeTrigger({
+    trigger: { type: 'slack', botRef: 'work', mentions: ['U1'], channels: ['C1', 'C1', 'C2'] },
+  });
+  assert.equal(t.botRef, 'work');
+  assert.deepEqual(t.channels, ['C1', 'C2']);
+});
+
+test('normalizeWatcher: a slack trigger requires channels (fail-closed)', () => {
   assert.equal(wconfig.normalizeWatcher({ name: 'm', trigger: { type: 'mention', users: ['U1'] } }, 0).ok, false);
   const n = wconfig.normalizeWatcher(
     { name: 'm', channels: ['C1'], trigger: { type: 'mention', users: ['U1'] }, intents: [{ name: 'x', skill: 'debug' }] },
     0
   );
   assert.equal(n.ok, true);
-  assert.equal(n.trigger.type, 'mention');
+  assert.equal(n.trigger.type, 'slack');
   assert.deepEqual(n.channels, ['C1']);
 });
 
@@ -237,9 +266,265 @@ test('normalizeWatcher: carries trigger + intents through', () => {
     0
   );
   assert.equal(n.ok, true);
-  assert.deepEqual(n.trigger, { type: 'mention', users: ['U1'] });
+  assert.deepEqual(n.trigger, slackTrigger(['U1'], { channels: ['C1'] }));
   assert.deepEqual(n.mentionUsers, ['U1']);
   assert.equal(n.intents[0].skill, 'review-go');
+  // and the same watcher in v2 terms
+  assert.deepEqual(n.rules, [{ name: 'pr', about: '', action: { type: 'skill', skill: 'review-go' } }]);
+});
+
+// ---- schema v2: migration, bots, rules, schedule watchers ------------------
+
+test('migrateRaw: v1 file upgrades losslessly and is idempotent', () => {
+  const v1 = {
+    slack: { botToken: '$SLACK_BOT_TOKEN' },
+    watchers: [{
+      name: 'mentions',
+      enabled: true,
+      channels: 'auto',
+      trigger: { type: 'mention', users: ['U1'] },
+      intents: [{ name: 'pr', description: 'review a PR', skill: 'review-go' }],
+      poll: { everySeconds: 120 },
+      action: { preferCheckout: 'acme', cwd: '/repos/x' },
+    }],
+  };
+  const frozen = JSON.parse(JSON.stringify(v1));
+  const v2 = wconfig.migrateRaw(v1);
+
+  assert.equal(v2.version, 2);
+  assert.deepEqual(v2.slack, { bots: { default: { token: '$SLACK_BOT_TOKEN' } } });
+  const w = v2.watchers[0];
+  assert.deepEqual(w.trigger, {
+    type: 'slack', botRef: 'default', mentions: ['U1'], channels: 'auto',
+  });
+  assert.deepEqual(w.rules, [
+    { name: 'pr', about: 'review a PR', action: { type: 'skill', skill: 'review-go' } },
+  ]);
+  assert.equal(w.intents, undefined, 'v1 intents are consumed');
+  assert.equal(w.channels, undefined, 'channels moved under trigger');
+  // untouched blocks ride along
+  assert.deepEqual(w.poll, { everySeconds: 120 });
+  assert.deepEqual(w.action, { preferCheckout: 'acme', cwd: '/repos/x' });
+  assert.equal(w.name, 'mentions');
+  assert.equal(w.enabled, true);
+
+  assert.deepEqual(v1, frozen, 'input is not mutated');
+  assert.deepEqual(wconfig.migrateRaw(v2), v2, 'idempotent');
+});
+
+test('migrateRaw: keeps comment keys, an explicit bots map, and a v2 watcher as-is', () => {
+  const v2in = {
+    version: 2,
+    '//note': 'kept',
+    slack: { bots: { work: { token: 'keychain:dash-slack', label: 'dash-bot' } } },
+    watchers: [{
+      name: 'w',
+      trigger: { type: 'slack', botRef: 'work', mentions: ['U1'], channels: ['C1'] },
+      rules: [{ name: 'r', about: 'x', action: { type: 'prompt', prompt: 'do it' } }],
+    }],
+  };
+  assert.deepEqual(wconfig.migrateRaw(v2in), v2in);
+});
+
+test('migrateRaw: a v1 botToken does not clobber an existing default bot', () => {
+  const out = wconfig.migrateRaw({
+    slack: { botToken: '$OLD', bots: { default: { token: '$NEW' } } },
+  });
+  assert.deepEqual(out.slack, { bots: { default: { token: '$NEW' } } });
+});
+
+test('normalizeBots: resolves each bot, exposes the ref not the secret, skips junk', () => {
+  const bots = wconfig.normalizeBots(
+    {
+      slack: {
+        bots: {
+          default: { token: '$TOK', label: 'dash-bot' },
+          shorthand: 'keychain:svc',
+          missing: { token: '$NOPE' },
+          'bad ref': { token: '$TOK' },
+          empty: 42,
+        },
+      },
+    },
+    { TOK: 'xoxb-1' },
+    { readKeychain: () => 'xoxb-2' }
+  );
+  assert.deepEqual(Object.keys(bots).sort(), ['default', 'missing', 'shorthand']);
+  assert.equal(bots.default.token, 'xoxb-1');
+  assert.equal(bots.default.tokenRef, '$TOK');
+  assert.equal(bots.default.label, 'dash-bot');
+  assert.equal(bots.shorthand.token, 'xoxb-2', 'a bare string is a token ref');
+  assert.equal(bots.missing.token, null, 'unresolvable token fails closed');
+});
+
+test('normalize: v1 file yields the same runnable watcher as its v2 equivalent', () => {
+  const v1 = wconfig.normalize(
+    {
+      slack: { botToken: '$TOK' },
+      watchers: [{
+        name: 'mentions', channels: ['C1'], trigger: { type: 'mention', users: ['U1'] },
+        intents: [{ name: 'pr', description: 'a PR', skill: 'review-go' }],
+      }],
+    },
+    { TOK: 'xoxb-9' }
+  );
+  const v2 = wconfig.normalize(
+    {
+      version: 2,
+      slack: { bots: { default: { token: '$TOK' } } },
+      watchers: [{
+        name: 'mentions',
+        trigger: { type: 'slack', botRef: 'default', mentions: ['U1'], channels: ['C1'] },
+        rules: [{ name: 'pr', about: 'a PR', action: { type: 'skill', skill: 'review-go' } }],
+      }],
+    },
+    { TOK: 'xoxb-9' }
+  );
+  assert.deepEqual(v1.watchers, v2.watchers, 'round-trip parity');
+  assert.equal(v1.version, 2);
+  assert.equal(v1.watchers[0].token, 'xoxb-9', 'watcher carries its bot token');
+  assert.equal(v1.watchers[0].botRef, 'default');
+});
+
+test('normalize: a watcher picks up its own bot; an unknown ref gets no token', () => {
+  const out = wconfig.normalize(
+    {
+      version: 2,
+      slack: { bots: { work: { token: '$W', label: 'work-bot' }, home: { token: '$H' } } },
+      watchers: [
+        { name: 'a', trigger: { type: 'slack', botRef: 'home', mentions: ['U1'], channels: ['C1'] } },
+        { name: 'b', trigger: { type: 'slack', botRef: 'ghost', mentions: ['U1'], channels: ['C1'] } },
+      ],
+    },
+    { W: 'xoxb-w', H: 'xoxb-h' }
+  );
+  assert.equal(out.watchers[0].token, 'xoxb-h');
+  assert.equal(out.watchers[1].token, null, 'unknown botRef fails closed');
+  // no `default` bot → the first one is the legacy single-token fallback
+  assert.equal(out.token, 'xoxb-w');
+});
+
+test('normalizeRules: skill + prompt actions, drops malformed', () => {
+  const out = wconfig.normalizeRules({
+    rules: [
+      { name: 'a', about: 'x', action: { type: 'skill', skill: 'review-go' } },
+      { name: 'b', action: { type: 'prompt', prompt: 'go find it' } },
+      { name: 'c' },                                              // no action → empty skill, allowed
+      { name: '', action: { type: 'skill', skill: 'x' } },         // no name
+      { name: 'd', action: { type: 'skill', skill: 'has space' } }, // invalid skill
+      { name: 'e', action: { type: 'prompt', prompt: '' } },        // empty prompt
+      { name: 'f', action: { type: 'launch' } },                    // unknown action
+    ],
+  });
+  assert.deepEqual(out.map((r) => r.name), ['a', 'b', 'c']);
+  assert.deepEqual(out[1].action, { type: 'prompt', prompt: 'go find it' });
+  assert.deepEqual(out[2].action, { type: 'skill', skill: '' });
+});
+
+test('rulesToIntents: prompt rules map to an empty skill (runner has no prompt action yet)', () => {
+  const intents = wconfig.rulesToIntents([
+    { name: 'a', about: 'x', action: { type: 'skill', skill: 'debug' } },
+    { name: 'b', about: 'y', action: { type: 'prompt', prompt: 'go' } },
+  ]);
+  assert.deepEqual(intents, [
+    { name: 'a', description: 'x', skill: 'debug' },
+    { name: 'b', description: 'y', skill: '' },
+  ]);
+});
+
+test('normalizeWatcher: a schedule watcher validates its prompt and schedule', () => {
+  const n = wconfig.normalizeWatcher(
+    {
+      name: 'sweep',
+      trigger: { type: 'schedule', everyMinutes: 1440, at: '09:00' },
+      prompt: '  Check my review-requested PRs  ',
+      action: { preferCheckout: 'acme', cwd: '/repos' },
+    },
+    0
+  );
+  assert.equal(n.ok, true);
+  assert.equal(n.type, 'schedule');
+  assert.equal(n.prompt, 'Check my review-requested PRs');
+  assert.equal(n.everyMinutes, 1440);
+  assert.equal(n.at, '09:00');
+  assert.equal(n.defaultCwd, '/repos');
+  assert.equal(n.preferCheckout, 'acme');
+  // no prompt → fail-closed
+  const bad = wconfig.normalizeWatcher({ name: 's2', trigger: { type: 'schedule', everyMinutes: 10 } }, 0);
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /prompt/);
+});
+
+test('normalize: schedule watchers are kept + reported, never handed to the Slack loop', () => {
+  const out = wconfig.normalize(
+    {
+      version: 2,
+      slack: { bots: { default: { token: '$TOK' } } },
+      watchers: [
+        { name: 'slack-one', trigger: { type: 'slack', mentions: ['U1'], channels: ['C1'] } },
+        { name: 'sweep', trigger: { type: 'schedule', everyMinutes: 60 }, prompt: 'find work' },
+      ],
+    },
+    { TOK: 'xoxb-9' }
+  );
+  assert.deepEqual(out.watchers.map((w) => w.name), ['slack-one'], 'only slack watchers run');
+  assert.equal(out.disabled.length, 1);
+  assert.equal(out.disabled[0].name, 'sweep');
+  assert.match(out.disabled[0].reason, /not implemented/);
+  // ...but the full normalized list keeps it for the management UI
+  assert.deepEqual(out.all.map((w) => `${w.name}:${w.type}:${w.ok}`), ['slack-one:slack:true', 'sweep:schedule:true']);
+});
+
+test('load: reports the on-disk version and migrates a v1 file in memory', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wload-'));
+  const f = path.join(dir, 'watchers.json');
+  fs.writeFileSync(f, JSON.stringify({
+    slack: { botToken: '$TOK' },
+    watchers: [{ name: 'mentions', channels: ['C1'], trigger: { type: 'mention', users: ['U1'] } }],
+  }));
+  const cfg = wconfig.load(f, { TOK: 'xoxb-9' });
+  assert.equal(cfg.present, true);
+  assert.equal(cfg.fileVersion, 1);
+  assert.equal(cfg.version, 2);
+  assert.equal(cfg.watchers[0].trigger.type, 'slack');
+  assert.equal(cfg.token, 'xoxb-9');
+  // the file itself is NOT rewritten to upgrade it
+  assert.equal(JSON.parse(fs.readFileSync(f, 'utf8')).version, undefined);
+
+  const missing = wconfig.load(path.join(dir, 'nope.json'));
+  assert.equal(missing.present, false);
+  assert.deepEqual(missing.watchers, []);
+  assert.deepEqual(missing.bots, {});
+});
+
+test('backupOnce: copies the config once, then leaves the copy alone', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wbak-'));
+  const f = path.join(dir, 'watchers.json');
+  fs.writeFileSync(f, '{"first":true}');
+  assert.equal(wconfig.backupOnce(f), true);
+  assert.equal(fs.readFileSync(`${f}.bak`, 'utf8'), '{"first":true}');
+  fs.writeFileSync(f, '{"second":true}');
+  assert.equal(wconfig.backupOnce(f), true);
+  assert.equal(fs.readFileSync(`${f}.bak`, 'utf8'), '{"first":true}', 'the original copy survives');
+  assert.equal(wconfig.backupOnce(path.join(dir, 'nope.json')), false);
+});
+
+test('setEnabled: backs the file up once and preserves its schema version', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wset2-'));
+  const f = path.join(dir, 'watchers.json');
+  const v1 = {
+    '//note': 'kept',
+    slack: { botToken: '$T' },
+    watchers: [{ name: 'mentions', enabled: true, channels: ['C1'], trigger: { type: 'mention', users: ['U1'] } }],
+  };
+  fs.writeFileSync(f, JSON.stringify(v1));
+  assert.equal(wconfig.setEnabled('mentions', false, f), true);
+  const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.equal(raw.watchers[0].enabled, false);
+  assert.equal(raw.version, undefined, 'pause does not force a schema upgrade');
+  assert.equal(raw['//note'], 'kept');
+  assert.deepEqual(raw.watchers[0].trigger, { type: 'mention', users: ['U1'] });
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${f}.bak`, 'utf8')), v1, 'pre-rewrite backup');
 });
 
 test('normalize: splits runnable vs disabled, resolves token', () => {
@@ -870,4 +1155,385 @@ test('watcher controls: pause/resume/run-now on an unknown watcher fail cleanly'
   assert.equal(loop.pause('ghost').ok, false);
   assert.equal(loop.resume('ghost').ok, false);
   assert.equal((await loop.runNow('ghost')).ok, false);
+});
+
+// ---- config write path: create / update / delete, merge-don't-replace -------
+
+function tmpCfg(contents) {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wsave-')), 'watchers.json');
+  if (contents !== undefined) fs.writeFileSync(f, JSON.stringify(contents, null, 2));
+  return f;
+}
+
+test('saveWatcher: creates a watcher in a file that does not exist yet', () => {
+  const f = tmpCfg();
+  const r = wconfig.saveWatcher(null, {
+    name: 'new-one',
+    trigger: { type: 'slack', mentions: ['U1'], channels: ['C1'] },
+    rules: [{ name: 'pr', about: 'a PR', action: { type: 'skill', skill: 'review-go' } }],
+  }, f);
+  assert.equal(r.ok, true);
+  assert.equal(r.created, true);
+  assert.equal(r.name, 'new-one');
+  const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.equal(raw.version, 2);
+  assert.equal(raw.watchers.length, 1);
+  assert.deepEqual(raw.watchers[0].trigger, {
+    type: 'slack', mentions: ['U1'], channels: ['C1'], botRef: 'default',
+  });
+});
+
+test('saveWatcher: merges onto the stored watcher — unknown keys and comments survive', () => {
+  const f = tmpCfg({
+    version: 2,
+    '//top': 'kept',
+    slack: { bots: { default: { token: '$T' } } },
+    watchers: [{
+      name: 'mentions',
+      '//note': 'hand-written, keep me',
+      customField: 42,
+      enabled: true,
+      trigger: { type: 'slack', botRef: 'default', mentions: ['U1'], channels: ['C1'] },
+      rules: [{ name: 'pr', about: 'x', action: { type: 'skill', skill: 'review-go' } }],
+      poll: { everySeconds: 300 },
+      action: { preferCheckout: 'acme', cwd: '/repos' },
+    }],
+  });
+  // patch ONLY the channels inside trigger, and only cwd inside action
+  const r = wconfig.saveWatcher('mentions', {
+    trigger: { channels: ['C1', 'C2'] },
+    action: { cwd: '/repos/other' },
+  }, f);
+  assert.equal(r.ok, true);
+  assert.equal(r.created, false);
+  const w = JSON.parse(fs.readFileSync(f, 'utf8')).watchers[0];
+  assert.deepEqual(w.trigger.channels, ['C1', 'C2']);
+  assert.deepEqual(w.trigger.mentions, ['U1'], 'nested block merges, not replaces');
+  assert.equal(w.trigger.botRef, 'default');
+  assert.equal(w.action.preferCheckout, 'acme', 'sibling key in the same block survives');
+  assert.equal(w.action.cwd, '/repos/other');
+  assert.deepEqual(w.poll, { everySeconds: 300 }, 'untouched block unchanged');
+  assert.equal(w['//note'], 'hand-written, keep me');
+  assert.equal(w.customField, 42);
+  assert.equal(JSON.parse(fs.readFileSync(f, 'utf8'))['//top'], 'kept');
+});
+
+test('saveWatcher: an editor save upgrades a v1 file to v2 (and backs it up once)', () => {
+  const v1 = {
+    slack: { botToken: '$T' },
+    watchers: [{
+      name: 'mentions', enabled: true, channels: 'auto',
+      trigger: { type: 'mention', users: ['U1'] },
+      intents: [{ name: 'pr', description: 'a PR', skill: 'review-go' }],
+    }],
+  };
+  const f = tmpCfg(v1);
+  const r = wconfig.saveWatcher('mentions', { poll: { everySeconds: 60 } }, f);
+  assert.equal(r.ok, true);
+  const raw = JSON.parse(fs.readFileSync(f, 'utf8'));
+  assert.equal(raw.version, 2);
+  assert.deepEqual(raw.slack, { bots: { default: { token: '$T' } } });
+  assert.equal(raw.watchers[0].trigger.type, 'slack');
+  assert.deepEqual(raw.watchers[0].trigger.mentions, ['U1']);
+  assert.equal(raw.watchers[0].trigger.channels, 'auto');
+  assert.equal(raw.watchers[0].intents, undefined);
+  assert.equal(raw.watchers[0].rules[0].action.skill, 'review-go');
+  assert.equal(raw.watchers[0].poll.everySeconds, 60);
+  assert.deepEqual(JSON.parse(fs.readFileSync(`${f}.bak`, 'utf8')), v1, 'pre-rewrite backup');
+});
+
+test('saveWatcher: refuses to write a watcher that could not run (fail-closed at the door)', () => {
+  const f = tmpCfg({ version: 2, slack: { bots: { default: { token: '$T' } } }, watchers: [] });
+  const before = fs.readFileSync(f, 'utf8');
+
+  const noMentions = wconfig.saveWatcher(null, { name: 'a', trigger: { type: 'slack', channels: ['C1'] } }, f);
+  assert.equal(noMentions.ok, false);
+  assert.match(noMentions.error, /mention/);
+
+  const noChannels = wconfig.saveWatcher(null, { name: 'b', trigger: { type: 'slack', mentions: ['U1'] } }, f);
+  assert.equal(noChannels.ok, false);
+  assert.match(noChannels.error, /channels/);
+
+  const noPrompt = wconfig.saveWatcher(null, { name: 'c', trigger: { type: 'schedule', everyMinutes: 10 } }, f);
+  assert.equal(noPrompt.ok, false);
+  assert.match(noPrompt.error, /prompt/);
+
+  assert.equal(fs.readFileSync(f, 'utf8'), before, 'nothing was written');
+  assert.equal(fs.existsSync(`${f}.bak`), false, 'a rejected save does not even back up');
+});
+
+test('saveWatcher: validates a disabled watcher as if enabled, and still saves it disabled', () => {
+  const f = tmpCfg({ version: 2, slack: { bots: { default: { token: '$T' } } }, watchers: [] });
+  const r = wconfig.saveWatcher(null, {
+    name: 'parked', enabled: false,
+    trigger: { type: 'slack', mentions: ['U1'], channels: ['C1'] },
+  }, f);
+  assert.equal(r.ok, true);
+  assert.equal(JSON.parse(fs.readFileSync(f, 'utf8')).watchers[0].enabled, false);
+});
+
+test('saveWatcher: unknown target, duplicate name, and bad name are rejected', () => {
+  const f = tmpCfg({
+    version: 2,
+    slack: { bots: { default: { token: '$T' } } },
+    watchers: [
+      { name: 'one', trigger: { type: 'slack', mentions: ['U1'], channels: ['C1'] } },
+      { name: 'two', trigger: { type: 'slack', mentions: ['U1'], channels: ['C1'] } },
+    ],
+  });
+  assert.match(wconfig.saveWatcher('ghost', { poll: { everySeconds: 60 } }, f).error, /unknown watcher/);
+  assert.match(wconfig.saveWatcher('two', { name: 'one' }, f).error, /already exists/);
+  assert.match(wconfig.saveWatcher('two', { name: 'bad/name' }, f).error, /invalid watcher name/);
+  assert.equal(wconfig.saveWatcher('two', 'nope', f).ok, false);
+});
+
+test('saveWatcher: renames in place and pins the derived name', () => {
+  const f = tmpCfg({
+    version: 2,
+    slack: { bots: { default: { token: '$T' } } },
+    // no explicit name → derived 'watcher-1'
+    watchers: [{ trigger: { type: 'slack', mentions: ['U1'], channels: ['C1'] } }],
+  });
+  const r = wconfig.saveWatcher('watcher-1', { name: 'mentions' }, f);
+  assert.equal(r.ok, true);
+  assert.equal(r.renamed, true);
+  assert.equal(r.name, 'mentions');
+  assert.equal(JSON.parse(fs.readFileSync(f, 'utf8')).watchers[0].name, 'mentions');
+});
+
+test('deleteWatcher: drops one watcher, leaves the rest, errors on unknown', () => {
+  const f = tmpCfg({
+    version: 2,
+    slack: { bots: { default: { token: '$T' } } },
+    watchers: [
+      { name: 'one', trigger: { type: 'slack', mentions: ['U1'], channels: ['C1'] } },
+      { name: 'two', trigger: { type: 'slack', mentions: ['U1'], channels: ['C2'] } },
+    ],
+  });
+  assert.equal(wconfig.deleteWatcher('one', f).ok, true);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f, 'utf8')).watchers.map((w) => w.name), ['two']);
+  assert.equal(wconfig.deleteWatcher('one', f).ok, false, 'already gone');
+  assert.equal(wconfig.deleteWatcher('', f).ok, false);
+  assert.equal(wconfig.deleteWatcher('two', path.join(path.dirname(f), 'nope.json')).ok, false);
+});
+
+test('mergeWatcherRaw: only known keys are patched, nested blocks merge', () => {
+  const out = wconfig.mergeWatcherRaw(
+    { name: 'w', extra: 1, trigger: { type: 'slack', mentions: ['U1'] }, poll: { everySeconds: 120 } },
+    { trigger: { channels: ['C1'] }, rules: [], bogus: 'ignored', extra: 99 }
+  );
+  assert.deepEqual(out.trigger, { type: 'slack', mentions: ['U1'], channels: ['C1'] });
+  assert.deepEqual(out.rules, []);
+  assert.equal(out.bogus, undefined, 'unknown patch keys are not applied');
+  assert.equal(out.extra, 1, 'stored extras are not overwritten by unknown patch keys');
+  assert.deepEqual(out.poll, { everySeconds: 120 });
+});
+
+test('editableConfig: raw v2 watchers + bot references, never a resolved secret', () => {
+  const f = tmpCfg({
+    slack: { botToken: '$WCFG_TOK' },
+    watchers: [
+      { name: 'good', channels: ['C1'], trigger: { type: 'mention', users: ['U1'] } },
+      { name: 'broken', channels: [], trigger: { type: 'mention', users: ['U1'] } },
+    ],
+  });
+  const view = wconfig.editableConfig(f, { WCFG_TOK: 'xoxb-secret' });
+  assert.equal(view.present, true);
+  assert.equal(view.version, 2);
+  assert.deepEqual(view.bots, [{ ref: 'default', label: '', tokenRef: '$WCFG_TOK', resolves: true }]);
+  assert.equal(JSON.stringify(view).includes('xoxb-secret'), false, 'no secret in the payload');
+  assert.deepEqual(view.watchers.map((w) => `${w.name}:${w.ok}`), ['good:true', 'broken:false']);
+  assert.match(view.watchers[1].reason, /channels/);
+  // raw is v2-shaped, i.e. exactly what a save patches
+  assert.equal(view.watchers[0].raw.trigger.type, 'slack');
+  assert.deepEqual(view.watchers[0].raw.trigger.mentions, ['U1']);
+
+  const missing = wconfig.editableConfig(path.join(path.dirname(f), 'nope.json'));
+  assert.equal(missing.present, false);
+  assert.deepEqual(missing.watchers, []);
+  assert.deepEqual(missing.bots, []);
+});
+
+// ---- runtime reconcile: an edit takes effect without a restart -------------
+
+function armLoop() {
+  const fakeClient = {
+    history: async () => ({ messages: [], has_more: false }),
+    replies: async () => ({ messages: [], has_more: false }),
+    permalink: async () => ({ permalink: '' }),
+  };
+  loop._setTestHooks({
+    buildDeps: () => ({ client: fakeClient, repoMap: { resolve: () => null, list: () => [] },
+      skillList: [], retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 10 } }),
+    scheduleInterval: () => ({}),
+  });
+}
+
+test('upsertWatcher: create → running, update → applied live, delete → gone', async () => {
+  const cfgFile = wconfig.FILE;
+  process.env.WATCH_TEST_TOK = 'xoxb-test';
+  fs.writeFileSync(cfgFile, JSON.stringify({
+    version: 2, slack: { bots: { default: { token: '$WATCH_TEST_TOK' } } }, watchers: [],
+  }));
+  freshState();
+  loop._reset();
+  armLoop();
+  loop.start();
+
+  const stateOf = (n) => {
+    const w = loop.getStatus().watchers.find((x) => x.name === n);
+    return w ? w.state : null;
+  };
+
+  const created = loop.upsertWatcher(null, {
+    name: 'live', trigger: { type: 'slack', mentions: ['U1'], channels: ['C1'] },
+    poll: { everySeconds: 120 },
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.created, true);
+  assert.equal(created.state, 'running');
+  assert.equal(stateOf('live'), 'running');
+
+  // update the poll interval → reflected in the live entry
+  const updated = loop.upsertWatcher('live', { poll: { everySeconds: 600 } });
+  assert.equal(updated.ok, true);
+  assert.equal(updated.created, false);
+  assert.equal(loop.getStatus().watchers.find((w) => w.name === 'live').everySeconds, 600);
+
+  // an invalid patch changes neither the file nor the runtime
+  const before = fs.readFileSync(cfgFile, 'utf8');
+  const bad = loop.upsertWatcher('live', { trigger: { mentions: [] } });
+  assert.equal(bad.ok, false);
+  assert.equal(fs.readFileSync(cfgFile, 'utf8'), before);
+  assert.equal(stateOf('live'), 'running');
+
+  // saving it disabled parks it as paused (resumable), not gone
+  assert.equal(loop.upsertWatcher('live', { enabled: false }).state, 'paused');
+  assert.equal(stateOf('live'), 'paused');
+  assert.equal(loop.upsertWatcher('live', { enabled: true }).state, 'running');
+
+  // rename retires the old runtime entry
+  const renamed = loop.upsertWatcher('live', { name: 'live2' });
+  assert.equal(renamed.renamed, true);
+  assert.equal(stateOf('live'), null);
+  assert.equal(stateOf('live2'), 'running');
+
+  // delete → out of the config and out of the runtime
+  assert.equal(loop.removeWatcher('live2').ok, true);
+  assert.equal(stateOf('live2'), null);
+  assert.deepEqual(JSON.parse(fs.readFileSync(cfgFile, 'utf8')).watchers, []);
+  assert.equal(loop.removeWatcher('live2').ok, false, 'already gone');
+
+  loop.stop();
+  fs.unlinkSync(cfgFile);
+  delete process.env.WATCH_TEST_TOK;
+});
+
+test('listBots / listChannels: identity + channel picker data, failures are per-bot', async () => {
+  const cfgFile = wconfig.FILE;
+  process.env.WATCH_TEST_TOK = 'xoxb-test';
+  fs.writeFileSync(cfgFile, JSON.stringify({
+    version: 2,
+    slack: {
+      bots: {
+        default: { token: '$WATCH_TEST_TOK', label: 'dash-bot' },
+        broken: { token: '$NOT_SET_ANYWHERE' },
+      },
+    },
+    watchers: [],
+  }));
+  loop._reset();
+  loop._setTestHooks({
+    createClient: (token) => ({
+      authTest: async () => {
+        if (token !== 'xoxb-test') throw new Error('slack auth.test: invalid_auth');
+        return { user: 'dash-bot', team: 'acme', bot_id: 'B1' };
+      },
+      userConversations: async ({ types, cursor }) => {
+        if (types.includes('private_channel')) throw new Error('slack users.conversations: missing_scope');
+        if (cursor) return { channels: [{ id: 'C2', name: 'second' }] };
+        return {
+          channels: [{ id: 'C1', name: 'first', is_private: false, is_archived: true }],
+          response_metadata: { next_cursor: 'page2' },
+        };
+      },
+    }),
+  });
+
+  const { bots } = await loop.listBots();
+  assert.deepEqual(bots.map((b) => b.ref), ['default', 'broken']);
+  assert.deepEqual(bots[0].identity, { user: 'dash-bot', team: 'acme', botId: 'B1' });
+  assert.equal(bots[0].label, 'dash-bot');
+  assert.equal(bots[0].error, null);
+  assert.equal(bots[1].identity, null);
+  assert.match(bots[1].error, /could not be read/, 'an unresolvable reference is reported, not thrown');
+  assert.equal(JSON.stringify(bots).includes('xoxb-test'), false, 'no token in the payload');
+
+  // degrades to public-only on missing_scope, and follows pagination
+  const chans = await loop.listChannels('default');
+  assert.equal(chans.ok, true);
+  assert.equal(chans.private, false);
+  assert.deepEqual(chans.channels.map((c) => c.id), ['C1', 'C2']);
+  assert.equal(chans.channels[0].archived, true);
+
+  assert.equal((await loop.listChannels('ghost')).ok, false);
+  assert.match((await loop.listChannels('broken')).error, /could not be read/);
+
+  loop.stop();
+  fs.unlinkSync(cfgFile);
+  delete process.env.WATCH_TEST_TOK;
+});
+
+test('normalizeWatcher: a schedule watcher may name a skill to run its prompt under', () => {
+  const n = wconfig.normalizeWatcher(
+    { name: 's', trigger: { type: 'schedule', everyMinutes: 30 }, prompt: 'go find work', skill: 'review-go' },
+    0
+  );
+  assert.equal(n.ok, true);
+  assert.equal(n.skill, 'review-go');
+  // optional…
+  assert.equal(wconfig.normalizeWatcher({ name: 's', trigger: { type: 'schedule', at: '09:00' }, prompt: 'go' }, 0).skill, '');
+  // …but not a bogus one
+  const bad = wconfig.normalizeWatcher(
+    { name: 's', trigger: { type: 'schedule', everyMinutes: 30 }, prompt: 'go', skill: 'has space' },
+    0
+  );
+  assert.equal(bad.ok, false);
+  assert.match(bad.reason, /invalid skill name/);
+});
+
+test('saveWatcher: `skill` is an editor-owned key on a schedule watcher', () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'wskill-')), 'watchers.json');
+  fs.writeFileSync(f, JSON.stringify({ version: 2, slack: { bots: {} }, watchers: [] }));
+  assert.equal(wconfig.saveWatcher(null, {
+    name: 'sweep', trigger: { type: 'schedule', everyMinutes: 60 }, prompt: 'find work', skill: 'review-go',
+  }, f).ok, true);
+  assert.equal(JSON.parse(fs.readFileSync(f, 'utf8')).watchers[0].skill, 'review-go');
+  // a later patch can clear it
+  assert.equal(wconfig.saveWatcher('sweep', { skill: '' }, f).ok, true);
+  assert.equal(JSON.parse(fs.readFileSync(f, 'utf8')).watchers[0].skill, '');
+});
+
+// ---- repos: the folder pickers' data ---------------------------------------
+
+test('repos dirs: lists every checkout, including both copies of a twice-cloned repo', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wrepos-'));
+  const mk = (parent, name, url) => {
+    const dir = path.join(base, parent, name);
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.git', 'config'), `[remote "origin"]\n\turl = ${url}\n`);
+    return dir;
+  };
+  mk('primary', 'svc', 'git@github.com:acme/svc.git');
+  mk('scratch', 'svc', 'git@github.com:acme/svc.git'); // same repo, second clone
+  mk('primary', 'lib', 'git@github.com:acme/lib.git');
+
+  const rm = repos.create({ base, depth: 2, preferDir: 'scratch' });
+  assert.deepEqual(rm.dirs(), [
+    path.join(base, 'primary', 'lib'),
+    path.join(base, 'primary', 'svc'),
+    path.join(base, 'scratch', 'svc'), // the second clone survives; the map drops it
+  ]);
+  // preferDir still decides which clone resolves
+  assert.equal(rm.resolve('acme/svc'), path.join(base, 'scratch', 'svc'));
 });

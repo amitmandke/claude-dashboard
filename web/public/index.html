@@ -102,13 +102,16 @@
     <div class="watch-toolbar">
       <span id="watch-summary" class="cand-count"></span>
       <button id="watch-stopall" class="ghost-btn" title="Pause every watcher (persists)">⏸ Stop all</button>
-      <button id="watch-startall" class="primary-btn" title="Resume every watcher (persists)">▷ Start all</button>
+      <button id="watch-startall" class="ghost-btn" title="Resume every watcher (persists)">▷ Start all</button>
+      <button id="watch-new" class="primary-btn" title="Create a watcher">＋ New watcher</button>
     </div>
     <main id="watch-grid"></main>
     <div id="watch-empty" class="empty" hidden>
       No watchers configured.<br>
-      <span>Add one in <code>~/.claude-dashboard/watchers.json</code> (see
-      <code>watchers.example.json</code>) — a watcher turns Slack mentions/DMs into candidates.</span>
+      <span>A watcher turns a trigger — a Slack match, or a prompt on a schedule — into
+      candidates. Use <b>＋ New watcher</b>, or edit
+      <code>~/.claude-dashboard/watchers.json</code> by hand (see
+      <code>watchers.example.json</code>).</span>
     </div>
   </div><!-- /#watchers-view -->
 
@@ -207,13 +210,19 @@
         <span class="watch-trigger"></span>
         <span class="watch-auto" hidden>auto-discover</span>
         <span class="watch-state"></span>
+        <span class="watch-head-actions">
+          <button class="watch-edit icon-btn" title="Edit this watcher">✎</button>
+          <button class="watch-delete icon-btn danger" title="Delete this watcher">🗑</button>
+        </span>
       </div>
       <div class="watch-meta">
         <span class="watch-lastpoll"></span>
         <span class="watch-every"></span>
         <span class="watch-channelcount"></span>
         <span class="watch-staged"></span>
+        <span class="watch-rules rule-chip" hidden></span>
       </div>
+      <div class="watch-body" hidden><div class="watch-prompt"></div></div>
       <div class="watch-channels"></div>
       <p class="watch-error" hidden></p>
       <div class="watch-actions">
@@ -223,6 +232,206 @@
       </div>
     </section>
   </template>
+
+  <!-- watcher create, step 0: what triggers it. Picking one opens the editor
+       below with that trigger's stages. Only implemented triggers are clickable. -->
+  <dialog id="watcher-trigger-dialog" class="app-modal">
+    <div class="m-head">
+      <div class="m-eyebrow"><span class="dot"></span> New watcher</div>
+      <h2 class="m-title">What triggers this watcher?</h2>
+      <button type="button" class="m-close" id="wt-close" title="Close" aria-label="Close">✕</button>
+    </div>
+    <div class="m-body">
+      <div class="trigger-pick">
+        <button type="button" class="trig-opt" data-kind="slack">
+          <div class="t-ic">⌗</div><div class="t-nm">Slack watcher</div>
+          <div class="t-dc">Polls a bot's channels; when a message matches one of your rules, it
+            produces a candidate.</div>
+        </button>
+        <button type="button" class="trig-opt" data-kind="schedule">
+          <div class="t-ic">◷</div><div class="t-nm">Generic watcher</div>
+          <div class="t-dc">Runs a prompt of your own as a session on a cadence; it finds whatever
+            you describe, stages candidates, then closes.</div>
+        </button>
+        <button type="button" class="trig-opt soon" disabled>
+          <div class="t-ic">$_</div><div class="t-nm">On a shell command</div>
+          <div class="t-dc">Run a command on a timer; its output becomes candidates.</div>
+        </button>
+        <button type="button" class="trig-opt soon" disabled>
+          <div class="t-ic">⤓</div><div class="t-nm">On an HTTP poll</div>
+          <div class="t-dc">Poll a URL/API; extracted items become candidates.</div>
+        </button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- watcher editor: one dialog, two stage sets (Slack / Schedule). The Raw
+       JSON view shows exactly the patch that will be saved. -->
+  <dialog id="watcher-dialog" class="app-modal watcher-modal">
+    <form id="watcher-form">
+      <div class="m-head">
+        <div class="m-eyebrow"><span class="dot"></span> <span id="wd-eyebrow">New watcher</span> ·
+          <span class="kind" id="wd-kind">Slack match</span></div>
+        <div class="m-title-row">
+          <input id="wd-name" class="name-inp" placeholder="watcher name" autocomplete="off" required>
+        </div>
+        <p class="rule"><span class="lead">Summary</span> <span id="wd-summary"></span></p>
+        <button type="button" class="m-close" id="wd-close" title="Close" aria-label="Close">✕</button>
+      </div>
+
+      <div class="m-body">
+        <!-- ---- Slack stages ---- -->
+        <div id="wd-slack-stages">
+          <div class="stage">
+            <span class="stage-no">1</span>
+            <div class="stage-title">Bot</div>
+            <div class="stage-hint">Picking it polls the channels it can see.</div>
+            <select id="wd-bot" class="inp"></select>
+            <div class="bot-conn" id="wd-bot-conn" hidden><span class="dot"></span><span id="wd-bot-conn-txt"></span></div>
+          </div>
+
+          <div class="stage">
+            <span class="stage-no">2</span>
+            <div class="stage-title">Channels</div>
+            <div class="stage-hint">Watch every channel the bot is in, or pick a subset.</div>
+            <div class="seg" id="wd-chan-mode">
+              <button type="button" data-mode="auto" class="on">All (auto-discover)</button>
+              <button type="button" data-mode="pick">Pick channels</button>
+            </div>
+            <div class="chan-picker" id="wd-chan-picker">
+              <div class="chan-search">
+                <span class="dim">⌕</span>
+                <input id="wd-chan-filter" placeholder="filter…" autocomplete="off">
+                <span class="count" id="wd-chan-count"></span>
+                <button type="button" class="chan-refresh" id="wd-chan-refresh"
+                  title="Re-read the bot's channels from Slack">↻</button>
+              </div>
+              <div class="chan-list" id="wd-chan-list"></div>
+            </div>
+          </div>
+
+          <div class="stage">
+            <span class="stage-no">3</span>
+            <div class="stage-title">Mentions &amp; rules — when → then</div>
+            <div class="stage-hint">A thread qualifies when one of these users is @-mentioned; rules
+              then say what to do. No rules = the classifier picks a skill itself.</div>
+            <div class="cond mentions-row">
+              <span class="k">mentioned</span>
+              <div class="chips-inp" id="wd-mentions"></div>
+            </div>
+            <div class="rules" id="wd-rules"></div>
+            <button type="button" class="add-rule" id="wd-add-rule">+ Add rule</button>
+          </div>
+
+          <div class="stage">
+            <span class="stage-no">4</span>
+            <div class="stage-title">Where it runs &amp; how often</div>
+            <div class="stage-hint">A candidate's folder comes from a PR link in the message; this is
+              the fallback when none resolves.</div>
+            <label class="lbl" for="wd-cwd">If no repo is found, open in</label>
+            <select id="wd-cwd" class="inp"></select>
+            <input id="wd-cwd-other" class="inp path" hidden placeholder="/path/to/folder" autocomplete="off">
+            <span class="fld-hint">Keeps a candidate launchable when the message has no PR link.
+              None = you pick the folder at launch.</span>
+            <div class="poll-row">
+              <span class="lbl">Poll every</span>
+              <div class="cadence" data-input="wd-poll">
+                <div class="beats" role="group" aria-label="Poll interval">
+                  <button type="button" class="beat" data-value="30">30s</button>
+                  <button type="button" class="beat" data-value="60">1m</button>
+                  <button type="button" class="beat" data-value="120">2m</button>
+                  <button type="button" class="beat" data-value="300">5m</button>
+                  <button type="button" class="beat" data-value="900">15m</button>
+                  <button type="button" class="beat is-custom">Custom</button>
+                </div>
+                <div class="stepper" data-min="30" data-max="3600" data-step="30" hidden>
+                  <button type="button" class="step-dn" tabindex="-1" aria-label="Less often">−</button>
+                  <input id="wd-poll" inputmode="numeric" value="120" autocomplete="off" aria-label="Poll interval in seconds">
+                  <span class="unit">sec</span>
+                  <button type="button" class="step-up" tabindex="-1" aria-label="More often">+</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ---- Schedule stages ---- -->
+        <div id="wd-schedule-stages" hidden>
+          <div class="stage">
+            <span class="stage-no">1</span>
+            <div class="stage-title">Prompt</div>
+            <div class="stage-hint">Optionally run it under a skill, then say what to produce. A
+              "report done / what blocked" step and a run token are appended automatically.</div>
+            <label class="lbl" for="wd-sched-skill">Skill</label>
+            <select id="wd-sched-skill" class="inp"></select>
+            <span class="fld-hint">The session starts as <code>/skill</code> with the prompt below as
+              its arguments.</span>
+            <label class="lbl prompt-lbl" for="wd-prompt">Prompt</label>
+            <textarea id="wd-prompt" class="inp" spellcheck="false"
+              placeholder="Check my review-requested PRs; stage a candidate for each new one…"></textarea>
+            <div class="note"><b>Not running yet</b> — generic watchers are saved and validated, but
+              the runner still executes Slack triggers only. When it lands: headless, read-only
+              tools, and it only <b>stages</b> candidates — launching one stays your click.</div>
+          </div>
+
+          <div class="stage">
+            <span class="stage-no">2</span>
+            <div class="stage-title">Where it runs &amp; how often</div>
+            <div class="stage-hint">The folder the producer session opens in, and its cadence. Only
+              one run at a time — a tick is skipped if the last run is still going.</div>
+            <label class="lbl" for="wd-cwd2">Run this prompt in</label>
+            <select id="wd-cwd2" class="inp"></select>
+            <input id="wd-cwd2-other" class="inp path" hidden placeholder="/path/to/folder" autocomplete="off">
+            <span class="fld-hint">Also the fallback folder for any candidate it stages without a
+              resolvable repo.</span>
+            <label class="lbl cadence-lbl">Runs</label>
+            <div class="seg" id="wd-sched-mode">
+              <button type="button" data-mode="every" class="on">Every interval</button>
+              <button type="button" data-mode="daily">Daily at…</button>
+              <button type="button" data-mode="cron">Cron</button>
+            </div>
+            <div class="sched-row">
+              <div id="wd-every-wrap"><span class="lbl">Every</span>
+                <div class="cadence" data-input="wd-every">
+                  <div class="beats" role="group" aria-label="Interval">
+                    <button type="button" class="beat" data-value="15">15m</button>
+                    <button type="button" class="beat" data-value="30">30m</button>
+                    <button type="button" class="beat" data-value="60">1h</button>
+                    <button type="button" class="beat" data-value="360">6h</button>
+                    <button type="button" class="beat" data-value="720">12h</button>
+                    <button type="button" class="beat is-custom">Custom</button>
+                  </div>
+                  <div class="stepper" data-min="1" data-max="10080" data-step="15" hidden>
+                    <button type="button" class="step-dn" tabindex="-1" aria-label="Longer interval">−</button>
+                    <input id="wd-every" inputmode="numeric" value="60" autocomplete="off" aria-label="Interval in minutes">
+                    <span class="unit">min</span>
+                    <button type="button" class="step-up" tabindex="-1" aria-label="Shorter interval">+</button>
+                  </div>
+                </div></div>
+              <div id="wd-at-wrap" hidden><label class="lbl" for="wd-at">At <span class="sub">— HH:MM</span></label>
+                <input id="wd-at" class="inp" placeholder="09:00" autocomplete="off"></div>
+              <div id="wd-cron-wrap" hidden><label class="lbl" for="wd-cron">Cron</label>
+                <input id="wd-cron" class="inp path" placeholder="0 9 * * 1-5" autocomplete="off"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="raw-toggle">
+          <button type="button" class="link-btn" id="wd-raw-toggle" aria-expanded="false">▸ Raw JSON</button>
+          <span class="raw-hint">the exact patch that will be saved — edit it if you prefer</span>
+        </div>
+        <textarea id="wd-raw" class="inp raw-json" spellcheck="false" hidden></textarea>
+        <p class="wd-error" id="wd-error" hidden></p>
+      </div>
+
+      <div class="m-foot">
+        <button type="button" id="wd-delete" class="btn danger" hidden>Delete</button>
+        <span class="foot-spacer"></span>
+        <button type="button" id="wd-cancel" class="btn ghost">Cancel</button>
+        <button type="submit" id="wd-submit" class="btn primary">Create watcher</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="new-session-dialog" class="app-modal">
     <form id="new-session-form">

@@ -50,7 +50,7 @@ creating the window — creating a window mid-launch fails with opaque AppleEven
 | App | Folder | Tech | Role |
 |---|---|---|---|
 | dashboard-server | `server/` | Node.js ≥18, no deps | Scans registry + transcripts, pushes live state over SSE, drives iTerm2 (send input, focus panes, launch new sessions), and runs the Slack watcher poll loop (candidate producer, see §5) |
-| dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Three in-page tabs (Sessions / Candidates / Watchers): summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog; the Candidates tab lists launchable pending work with a text filter; the Watchers tab shows each watcher's live state with Pause/Resume/Run-now and global Stop-all/Start-all |
+| dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Three in-page tabs (Sessions / Candidates / Watchers): summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog; the Candidates tab lists launchable pending work with a text filter; the Watchers tab shows each watcher's live state with Pause/Resume/Run-now, global Stop-all/Start-all, and create/edit/delete via a trigger-picker + staged editor dialog |
 
 A single `node server/src/index.js` runs everything; the web app is static files served
 by the same process. `scripts/install-launchd.sh` installs it as a macOS launchd user
@@ -267,9 +267,9 @@ server/src/
 │   ├── skills.js             skill/command discovery (~/.claude + <cwd>/.claude + enabled plugins)
 │   ├── candidates/
 │   │   └── store.js          launchable candidate list (~/.claude-dashboard/candidates.json)
-│   ├── watchers/             Slack watcher — candidate producer (see "Slack watchers" below)
+│   ├── watchers/             candidate producers — trigger → candidates (see "Watchers" below)
 │   │   ├── index.js          per-watcher runtime (Map): poll loop, pipeline (runWatcherOnce), pause/resume/run-now
-│   │   ├── config.js         load/validate watchers.json (fail-closed); trigger + intent map
+│   │   ├── config.js         watchers.json schema v2: load/validate (fail-closed), v1→v2 migration, bots + rules
 │   │   ├── state.js          per-channel cursor + tracked threads + seen dedupe (watchers-state.json)
 │   │   ├── slack.js          zero-dep Slack Web API client (read-only; injectable transport)
 │   │   ├── repos.js          owner/repo → local checkout, auto-discovered from git remotes
@@ -312,6 +312,13 @@ server/src/
 | `/api/watchers/:name/cursor` | POST | move a channel's "watch from" point: `{ channel, at }` (`at` = `"now"` or a date); clears that channel's tracked threads/seen |
 | `/api/watchers/:name/channel/{pause,resume}` | POST | pause / resume a single channel (`{ channel }`); a paused channel is skipped every poll, state kept |
 | `/api/watchers/{stop-all,start-all}` | POST | pause / resume every watcher at once |
+| `/api/watchers/config` | GET | the editable config: each watcher in v2 raw shape (what a save patches, so a Raw-JSON view round-trips) plus `{ ref, label, tokenRef, resolves }` per bot — references only, never a resolved token |
+| `/api/watchers/bots` | GET | bots with their live identity from `auth.test` (`{ user, team, botId }`); an unresolvable reference or a rejected token comes back as that bot's `error`, not a failed request |
+| `/api/watchers/folders` | GET | folder choices for the editor: every discovered checkout path (both copies of a twice-cloned repo, unlike the resolve map) |
+| `/api/watchers/channels?botRef=` | GET | live channel list for one bot (`users.conversations`): `{ id, name, isPrivate, archived }`, paginated + capped, public-only when `groups:read` is missing |
+| `/api/watchers` | POST | create a watcher; the body is the patch (`{ name, enabled, trigger, rules, prompt, poll, action }`). 400 carries the fail-closed reason |
+| `/api/watchers/:name` | PUT/POST | update a watcher (same patch shape, merged onto the stored one); `{ name }` renames. 400 on an invalid result — nothing is written |
+| `/api/watchers/:name` | DELETE | remove a watcher from the config and stop it |
 
 The SSE snapshot is `{sessions, candidates, caps:{maxConcurrent, maxPending}, now}` — the
 candidate list rides the same 1.5 s diff-and-push loop, so any add/edit/launch/dismiss/clear
@@ -347,33 +354,80 @@ page offers two buttons: **Launch now** (spawns immediately) and **Add to candid
 (stages it on the Candidates tab for later review), so the emitting session lets you pick
 immediate vs. queued-for-review.
 
-### Slack watchers (candidate producer)
+### Watchers (candidate producers)
 
-A **watcher** watches a Slack channel and turns threads that **@-mention you** into
-candidate sessions. It never launches or posts anything — it only *produces* candidates you
-review. It runs inside the dashboard server process (started at boot), so it works whenever
-the machine is up, independent of whether a browser tab is open.
+A **watcher** is one idea: a **trigger that produces candidates**. It never launches or posts
+anything — it only *produces* candidates you review. It runs inside the dashboard server
+process (started at boot), so it works whenever the machine is up, independent of whether a
+browser tab is open. Two trigger types exist in the schema:
+
+- **`slack`** — poll a bot's channels; a thread that **@-mentions you** and matches a rule
+  stages a candidate. This is the implemented pipeline, described below.
+- **`schedule`** — run a saved prompt as an ephemeral session that finds work and stages
+  candidates. The schema validates these and the Watchers tab reports them, but the runner
+  does **not** execute them yet: `config.normalize` hands the Slack poll loop only `slack`
+  watchers, so a trigger type nothing can run can never reach it. Design: `docs/proposals.md`
+  Proposal 6.
 
 **Configuration** lives in `~/.claude-dashboard/watchers.json` (local, git-ignored; the repo
-ships `watchers.example.json` with placeholders only). Validation is **fail-closed**: a
-watcher with no channels or no trigger users does not run — there is no "watch everything".
-Each watcher declares:
+ships `watchers.example.json` with placeholders only), at **schema `version: 2`**. Validation
+is **fail-closed**: a slack watcher with no channels or no mention users does not run — there
+is no "watch everything" — and a schedule watcher with no prompt does not run. The file
+declares a **bots map** plus a list of watchers:
 
-- `channels` — Slack channel IDs the bot has been invited to. **All listed channels are
-  scanned** (in parallel, each with its own independent cursor). Or the string **`"auto"`**
-  to **auto-discover** every channel the bot is a member of (via `users.conversations`,
-  paginated) and scan them all — invite the bot to a channel and it just appears, no config
-  edit. Discovery prefers public + private but degrades to public-only when the token lacks
-  `groups:read` (private channels also need `groups:history` to read anyway).
-- `trigger` — what makes a thread worth looking at. One type (the shape leaves room for
-  `keyword`/`reaction` later):
-  - `{ type: "mention", users:[…] }` — a channel thread qualifies when one of those users is
-    @-mentioned **anywhere in it, including a late reply**.
-- `intents` — an **intent → skill map**: `[{ name, description, skill }]`. This is the point
-  of control: the classifier's only job is to match a thread to one named intent (or none),
-  and the **skill is taken from this map, not chosen by the model**. With an empty list the
-  classifier falls back to picking a skill freely (looser, less controlled).
-- `poll.everySeconds` (floored at 30) and `action.preferCheckout`.
+- `slack.bots` — `{ <ref>: { token, label } }`, one entry per Slack bot (a bare string is
+  shorthand for `{ token }`). `token` is always a *reference*, never the secret (see below).
+  A watcher points at one bot with `trigger.botRef` (default: `"default"`); an unknown ref
+  resolves to no token, which fails closed.
+- `trigger` — what fires the watcher:
+  - `{ type:"slack", botRef, channels, mentions:[…] }` — a channel thread qualifies when one
+    of `mentions` is @-mentioned **anywhere in it, including a late reply**. `channels` is the
+    list of channel IDs the bot has been invited to — **all listed channels are scanned** (in
+    parallel, each with its own independent cursor) — or the string **`"auto"`** to
+    **auto-discover** every channel the bot is a member of (via `users.conversations`,
+    paginated) and scan them all: invite the bot to a channel and it just appears, no config
+    edit. Discovery prefers public + private but degrades to public-only when the token lacks
+    `groups:read` (private channels also need `groups:history` to read anyway).
+  - `{ type:"schedule", everyMinutes | at:"HH:MM" | cron }` — `at` alone means daily.
+- `rules` — the **when → then map**: `[{ name, about, action }]`, where `action` is
+  `{ type:"skill", skill }` or `{ type:"prompt", prompt }`. This is the point of control: the
+  classifier's only job is to match a thread to one named rule (or none), and the **action is
+  taken from this map, not chosen by the model**. With an empty list the classifier falls back
+  to picking a skill freely (looser, less controlled). The runner executes `skill` actions
+  today; a `prompt` action normalizes to an empty skill until the runner learns it.
+- `prompt` — the producing task, for a `schedule` watcher; optional `skill` runs it as
+  `/<skill> <prompt>` (validated like any skill name; the runner will use it when it lands).
+- `poll.everySeconds` (floored at 30), `action.preferCheckout`, `action.cwd`.
+
+**Editing a watcher** goes through `config.saveWatcher` → `watchers.upsertWatcher`. Three
+properties make hand-written config safe to edit from a UI: the save **patches only the keys an
+editor owns** (`name`, `enabled`, `trigger`, `rules`, `prompt`, `poll`, `action`) and merges the
+nested blocks shallowly, so unknown fields and `//` comments survive a round trip; it
+**validates fail-closed before writing** (the merged watcher is normalized as if enabled, and a
+result that couldn't run is rejected with its reason instead of saved dead); and it writes
+**atomically after a one-time `.bak`**. A save then **reconciles just that watcher's runtime**
+(`watchers.reconcile`) — restart it if runnable, park it `paused` if only `enabled:false`, mark
+it `disabled` with the reason if the config can't run it, forget it if deleted — so an edit
+takes effect immediately without touching any other watcher and without a server restart. A
+rename retires the old runtime entry; the deleted/renamed watcher's cursors in
+`watchers-state.json` are deliberately left in place, so re-creating that name resumes watching
+where it left off rather than re-baselining. Watchers can point at **different bots**
+(`trigger.botRef`): `buildDeps` keeps one Slack client per token and each poll uses its own
+watcher's.
+
+**Schema v1 is migrated at load time, in memory** (`config.migrateRaw`, idempotent), so an
+older hand-written file keeps working untouched and never has to be rewritten just to upgrade
+it: `slack.botToken` → `slack.bots.default`, `trigger.type:"mention"` → `"slack"`,
+`trigger.users`/`mentionUsers`/`users` → `trigger.mentions`, `channels` → `trigger.channels`,
+and `intents[{name,description,skill}]` → `rules[{name,about,action}]`. Unknown keys (including
+the `//` comments in the example file) ride along, so the same transform can back a
+merge-don't-replace save later. Normalized watchers additionally carry v1 aliases
+(`mentionUsers`, `trigger.users`, `intents` derived from `rules`) for the shipped runner and
+classifier, which still speak intent→skill; that alias layer is the seam to delete when they
+learn `rules`. `load()` reports the on-disk `fileVersion` alongside the normalized `version`.
+Every write path (today: Pause/Resume via `setEnabled`) copies the file to
+`watchers.json.bak` once before its first rewrite and then writes **atomically** (temp +
+rename), preserving the file's own schema version and unknown fields.
 
 **Polling with a per-channel persistent cursor** (`state.js` → `watchers-state.json`) is the
 reliability backbone. State is keyed `watcher → channel`, so each channel keeps its **own**
@@ -409,8 +463,9 @@ usable prompt. If the classifier is unavailable the thread is still staged as
 socket/poll overlap or a re-scan never double-stages, and a decided thread (matched or not) is
 marked `seen` so it isn't re-classified.
 
-The token is resolved from a reference in config (`slack.botToken`), never stored inline in the
-repo. Three schemes, resolved by `config.resolveToken`: `keychain:<service>[:<account>]` (macOS
+Each bot's token is resolved from a reference in config (`slack.bots.<ref>.token`), never stored
+inline in the repo — the normalized bot exposes the *reference* for display and the resolved
+secret only to the runner. Three schemes, resolved by `config.resolveToken`: `keychain:<service>[:<account>]` (macOS
 Keychain via the `security` CLI — encrypted, and never placed in `process.env` so it isn't
 inherited by the headless `claude -p` children), `@/abs/path` (a `chmod 600` file), or
 `$ENV_VAR`. Scopes are read-only (`channels:history`/`groups:history` to read, plus optional
@@ -429,7 +484,36 @@ sets every channel's start to now at once. Watcher-level **Pause / Resume / Run-
 **Stop-all / Start-all** remain. Pause/Resume **persist** to `watchers.json`
 (`config.setEnabled` flips `enabled`, preserving all other fields) so they survive a restart; a
 paused watcher comes back paused. Status rides the SSE snapshot (`watchers` key) so the tab is
-live. The **first time a channel is seen** it baselines to *now* and fetches **no** history —
+live. **Every configured watcher gets a card, including ones the loop can't run** — an
+`enabled:false` one as resumable `paused`, a `schedule` one or a config error as `disabled` with
+the reason on the card: the tab is where you notice a watcher that isn't working, and its ✎ is how
+you fix it. A card's config-only details (rule count, and a schedule watcher's prompt + interval,
+which never reach the poll loop) come from a `configMeta` map refreshed wherever config is
+re-read — never per status call, which runs on every SSE tick.
+
+**Create / edit from the UI.** **＋ New watcher** opens a **step-0 type picker** — **Slack watcher**
+or **Generic watcher** (your own prompt on a cadence; `trigger.type: "schedule"` in config), with
+shell-command and HTTP shown as *soon* — then the editor with that type's stages. Both end with the
+**same final stage**, "where it runs & how often" (folder, then cadence), so what they share sits in
+the same place instead of one dialog leading with cadence and the other burying it: Slack = bot →
+channels → mentions + when→then rules → where/how-often; Generic = skill + prompt → where/how-often.
+Numeric fields are plain inputs (no spinner arrows) — bounds are enforced server-side. The dialog carries a live plain-language **summary** of what the watcher will do, a live
+per-rule sentence, and a **Raw JSON** toggle showing the exact patch that will be saved (editable,
+for anything the form doesn't cover — the escape hatch that keeps the form from being a ceiling).
+Every choice is a **picker over real data**, never free text with a guess: the bot shows who it is
+signed in as (`auth.test`), channels list what that bot can actually see, skills come from the
+installed catalog, and the folder field is a dropdown built from `GET /api/watchers/folders`
+(discovered checkouts + recent folders) with an **Other…** escape for a path that isn't listed. Each
+kind exposes exactly one folder: a Slack watcher's is the *fallback* when no PR link resolves, a
+schedule watcher's is where the producer session itself opens. `action.preferCheckout` is
+deliberately **not** editable here — the repo tie-break the runner actually honors is the
+`CLAUDE_DASH_PREFER_CHECKOUT` env var, so a per-watcher field would have promised an effect it
+doesn't have (the key is still accepted and preserved for a future runner, and reachable via Raw
+JSON). Saving sends a patch
+(never a whole-file rewrite) and the reply's fail-closed reason is shown inline in the dialog
+rather than as a toast, next to the field that caused it. An edit deliberately omits `enabled`, so
+editing a paused watcher leaves it paused. The tab's SSE re-render is suspended while the dialog is
+open (same guard as the inline channel time-editor) so a snapshot can't rebuild the form mid-edit. The **first time a channel is seen** it baselines to *now* and fetches **no** history —
 so nothing already posted (however recent, answered or not) is ever staged, and the first poll
 stays instant even across many auto-discovered channels. From then on each poll reads only
 `cursor→now` and advances the cursor to the newest message read, so a message is never re-read;
@@ -452,18 +536,23 @@ is unit-tested against a stub client and an injected timer.
 - **Dark and light themes via CSS variables only** — every color in `style.css` lives in a variable on `:root` (dark, the default) with a complete counterpart under `[data-theme="light"]`; no rule hardcodes a color. The header toggle cycles three modes — 🌗 auto (follows `prefers-color-scheme` live, so scheduled OS day/night switching works), ☀️ light, 🌙 dark — flipping `data-theme` on `<html>`. Auto is the default (nothing stored); an explicit choice persists in `localStorage`, and an inline `<head>` script applies the resolved theme before the stylesheet loads (no flash). The reply popup follows the "Markdown Reader" extension's matching theme pair (one-dark / one-light). Deliberate exception: the terminal mirror stays dark in both themes — it mirrors a real terminal pane.
 - **Subagent (sidechain) events filtered out** of the feed — keeps the action feed readable; the main-chain Agent tool call still shows.
 - **Candidates are inert data, launched explicitly** — a candidate is a stored plan, not a running thing; the producer API (`POST /api/candidates`) can't make anything spawn on its own, so a session or external tool proposing work never bypasses your review. Launch reuses the exact `/sessions/new` validation + spawn path (no second way to start a session), and is gated by `maxConcurrent` — counted over **actively-working** sessions (busy/waiting), not idle/turn-complete windows, so it caps *load* rather than open windows (default is a high backstop) — so a backlog can't flood the machine; `maxPending` bounds the list (adds past it are rejected and logged, never silently dropped). The list is a single JSON file written atomically by the one event loop — same single-writer pattern as titles/AI-titles, no locking. **In-page tabs, not a second page**: the Candidates view shares the one SSE stream, theme, and toast plumbing — it's a view toggle, so launching a candidate and watching it become a live card stays within one app.
-- **Slack watchers poll (never Socket Mode), and the LLM only matches an intent** — polling with a persistent cursor backfills anything posted while the machine was asleep; a real-time socket would silently drop exactly those events, so it was rejected for an intermittently-running tool. And the classifier is scoped as narrowly as possible: it names a configured intent (or none) — the skill comes from the config map and the repo/reason are derived deterministically, so *what* launches (which skill, which repo) stays under explicit user control, not model whim. The classifier also drafts the launch prompt, but that only shapes the *hand-off text* the session reads, not the skill/repo decision, and it's tool-less (thread text only). Read-only scopes mean a watcher can never post.
+- **Slack watchers poll (never Socket Mode), and the LLM only matches an intent** — polling with a persistent cursor backfills anything posted while the machine was asleep; a real-time socket would silently drop exactly those events, so it was rejected for an intermittently-running tool. And the classifier is scoped as narrowly as possible: it names a configured rule (or none) — the skill comes from that rule's action and the repo/reason are derived deterministically, so *what* launches (which skill, which repo) stays under explicit user control, not model whim. The classifier also drafts the launch prompt, but that only shapes the *hand-off text* the session reads, not the skill/repo decision, and it's tool-less (thread text only). Read-only scopes mean a watcher can never post.
 - **`reply` vs `done` is a heuristic** — question detection plus the undelivered-deliverable check. Side-effect matching is deliberately invocation-shaped (`git push`, `gh pr comment`) rather than word-shaped: "show PR commits" must not count as a delivery. It can still misclassify; the cost of an error is just a wrong tile/animation, and the banner shows the actual closing text so the user can judge.
 
 ## 7. Possible future extensions
 
 - **Watchers management panel.** Watchers are configured today by hand-editing
-  `watchers.json`; the UI only shows read-only status. A guided panel to create/edit/enable
-  watchers (pick trigger → channel → users → intent→skill map, with validation and a preview
-  of what will match) is a deliberate follow-up — the emphasis is explicit control over how a
-  watcher is added, made easy to use. It overlaps with a future settings panel.
+  `watchers.json`; the UI only shows read-only status. Schema v2 (bots map, `trigger.type`,
+  when→then `rules`) is the backend half of the follow-up: a guided panel to create/edit/enable
+  watchers — step-0 trigger picker → bot → channels → rules, with validation and a preview of
+  what will match — plus the write endpoints it needs (create/update/delete, live channel list,
+  bot list). The emphasis is explicit control over how a watcher is added, made easy to use. It
+  overlaps with a future settings panel. Approved mock: `docs/watchers-mock.html`.
+- **Running `schedule` watchers.** The schema accepts them; the runner does not execute them
+  yet (single-instance guard, completion protocol, idle timeout, auto-close — Proposal 6 in
+  `docs/proposals.md`). Until then they normalize, validate, and report as not-implemented.
 - **More watcher triggers & post-back.** The trigger shape is built for `keyword`/`reaction`
-  beyond `mention`; and a `postBack: propose` mode could let a launched session draft a reply
+  beyond a Slack mention; and a `postBack: propose` mode could let a launched session draft a reply
   into the originating Slack thread for one-click approval (adds `chat:write`, kept out of the
   read-only first cut). A `POST /api/candidates/from-text` endpoint would let a running session
   hand free text to the same intent classifier.
