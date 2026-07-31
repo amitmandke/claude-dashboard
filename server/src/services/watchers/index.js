@@ -391,8 +391,19 @@ const runtime = new Map();
 // `buildDeps` and `scheduleInterval` are reassignable so tests can inject a fake
 // Slack client and a no-op timer (see _setTestHooks) — no network, no real
 // intervals leaking out of a test run.
+/** Reassignable for tests: one Slack client per bot token (no network in tests). */
+let createClient = (token) => slack.createClient({ token });
+
 let buildDeps = (cfg) => {
-  const client = slack.createClient({ token: cfg.token });
+  const client = createClient(cfg.token);
+  // One client per bot token, built on demand: watchers can point at different
+  // bots (`trigger.botRef`), and each must poll with its own token.
+  const clients = new Map();
+  const clientFor = (token) => {
+    if (!token || token === cfg.token) return client;
+    if (!clients.has(token)) clients.set(token, createClient(token));
+    return clients.get(token);
+  };
   const repoMap = repos.create({
     base: config.WATCHERS_CODEBASE_DIR,
     preferDir: config.WATCHERS_PREFER_CHECKOUT,
@@ -403,10 +414,55 @@ let buildDeps = (cfg) => {
     seenTtlMs: config.WATCHERS_SEEN_TTL_DAYS * DAY_MS,
     maxThreads: config.WATCHERS_MAX_THREADS,
   };
-  return { client, repoMap, skillList, retention };
+  return { client, clientFor, repoMap, skillList, retention };
 };
 
 let scheduleInterval = (fn, ms) => setInterval(fn, ms);
+
+// What the config says about each watcher, for the Watchers tab: the poll loop
+// only ever holds `slack` watchers, so a schedule watcher's prompt/schedule (and
+// any watcher's rule count) has to come from here. Refreshed wherever config is
+// re-read — never per status call, which runs on every SSE tick.
+let configMeta = new Map();
+
+function noteConfigMeta(cfg) {
+  configMeta = new Map(
+    (cfg.all || []).map((w, i) => [
+      w.name,
+      {
+        // position in watchers.json — the tab's stable sort key, so a card never
+        // moves just because the runtime Map happened to be rebuilt differently
+        order: i,
+        type: w.type,
+        rules: (w.rules || []).length,
+        prompt: w.prompt || '',
+        skill: w.skill || '',
+        everyMinutes: w.everyMinutes || null,
+        at: w.at || '',
+        cron: w.cron || '',
+      },
+    ])
+  );
+}
+
+/**
+ * A runtime entry for a watcher the poll loop can't run: `paused` when it is
+ * merely `enabled:false` (a Resume click revives it), otherwise `disabled` with
+ * the reason (a schedule watcher — not implemented yet — or a config error).
+ * Both are surfaced rather than hidden: the tab is where you notice a watcher
+ * that isn't working, and its Edit button is how you fix it.
+ */
+function entryFromDisabled(name, reason, prev) {
+  const paused = reason === 'disabled';
+  return {
+    name, channels: [], everySeconds: null, discover: false, trigger: null,
+    state: paused ? 'paused' : 'disabled',
+    lastPollAt: prev ? prev.lastPollAt : null,
+    staged: prev ? prev.staged : 0,
+    lastError: paused ? null : reason,
+    watcher: null, timer: null,
+  };
+}
 
 function entryFromWatcher(w, state) {
   return {
@@ -441,8 +497,12 @@ function startTimer(e) {
 async function tick(entry) {
   if (!deps || !entry.watcher) return;
   try {
+    // poll with this watcher's own bot token when it has one (fake deps in tests
+    // supply only `client`)
+    const client =
+      (deps.clientFor && entry.watcher.token && deps.clientFor(entry.watcher.token)) || deps.client;
     const r = await runWatcherOnce(entry.watcher, {
-      client: deps.client,
+      client,
       resolveRepo: (rr) => deps.repoMap.resolve(rr),
       knownRepos: deps.repoMap.list(),
       skillList: deps.skillList,
@@ -467,6 +527,7 @@ function start() {
   if (!config.WATCHERS_ENABLED) return;
 
   const cfg = watcherConfig.load();
+  noteConfigMeta(cfg);
   cfg.disabled.forEach((d) => log(`ACTION watcher name=${d.name} disabled=${d.reason}`));
   if (!cfg.present) return; // no config file -> feature simply off
   featureOn = true;
@@ -483,15 +544,10 @@ function start() {
     startTimer(e);
     log(`ACTION watcher name=${w.name} started channels=${w.channels.join(',')} every=${w.everySeconds}s`);
   }
-  // surface enabled:false watchers as resumable 'paused' entries (config errors
-  // are left out — they need a file edit, not a Resume click).
+  // surface everything the loop isn't running: `enabled:false` as a resumable
+  // 'paused' entry, a schedule watcher or a config error as 'disabled' + reason
   for (const d of cfg.disabled) {
-    if (d.reason === 'disabled' && !runtime.has(d.name)) {
-      runtime.set(d.name, {
-        name: d.name, channels: [], everySeconds: null, trigger: null,
-        state: 'paused', lastPollAt: null, staged: 0, lastError: null, watcher: null, timer: null,
-      });
-    }
+    if (!runtime.has(d.name)) runtime.set(d.name, entryFromDisabled(d.name, d.reason, null));
   }
 }
 
@@ -508,6 +564,7 @@ function pause(name) {
 function resume(name) {
   const persisted = watcherConfig.setEnabled(name, true);
   const cfg = watcherConfig.load();
+  noteConfigMeta(cfg);
   const w = cfg.watchers.find((x) => x.name === name);
   if (!w) return { ok: false, error: 'watcher not found or has a config error' };
   if (!deps) {
@@ -577,6 +634,166 @@ function setChannelPaused(name, channel, paused) {
   return { ok: true, channel, paused: !!paused };
 }
 
+/**
+ * Sync ONE watcher's runtime entry with what the config file now says, without
+ * disturbing any other watcher: restart it if it's runnable, park it as
+ * `paused` if it's merely `enabled:false`, mark it `disabled` (with the reason)
+ * if the config can't run it, and forget it entirely if it's gone. This is what
+ * makes an edit take effect immediately instead of at the next restart.
+ */
+function reconcile(name) {
+  const cfg = watcherConfig.load();
+  noteConfigMeta(cfg);
+  const existing = runtime.get(name);
+  if (existing) clearTimer(existing);
+
+  const w = cfg.watchers.find((x) => x.name === name);
+  if (!w) {
+    const bad = cfg.disabled.find((d) => d.name === name);
+    if (!bad) {
+      runtime.delete(name); // deleted from config
+      return { state: 'gone' };
+    }
+    const e = entryFromDisabled(name, bad.reason, existing);
+    runtime.set(name, e);
+    return { state: e.state, reason: bad.reason };
+  }
+
+  if (!deps) {
+    if (!cfg.token) {
+      runtime.set(name, { ...entryFromWatcher(w, 'disabled'), lastError: 'no usable Slack bot token' });
+      return { state: 'disabled', reason: 'no usable Slack bot token' };
+    }
+    deps = buildDeps(cfg);
+  }
+  featureOn = true;
+  const e = existing
+    ? Object.assign(existing, {
+      watcher: w, channels: w.channels, discover: !!w.discover,
+      everySeconds: w.everySeconds, trigger: w.trigger ? w.trigger.type : null, lastError: null,
+    })
+    : entryFromWatcher(w, 'running');
+  runtime.set(name, e);
+  startTimer(e);
+  return { state: 'running' };
+}
+
+/**
+ * Create or update a watcher from the management UI: persist the patch (merge,
+ * don't replace — `config.saveWatcher` validates fail-closed and refuses to
+ * write a watcher that couldn't run), then reconcile just that watcher's
+ * runtime. `name` is null/'' to create. A rename retires the old entry.
+ */
+function upsertWatcher(name, patch) {
+  const saved = watcherConfig.saveWatcher(name, patch);
+  if (!saved.ok) return saved;
+  if (saved.renamed && name && name !== saved.name) {
+    const old = runtime.get(name);
+    if (old) clearTimer(old);
+    runtime.delete(name);
+  }
+  const r = reconcile(saved.name);
+  log(`ACTION watcher name=${saved.name} ${saved.created ? 'created' : 'updated'} state=${r.state}`);
+  return { ok: true, name: saved.name, created: saved.created, renamed: saved.renamed, state: r.state, reason: r.reason || null };
+}
+
+/** Delete a watcher: stop its timer, drop its entry, remove it from the config. */
+function removeWatcher(name) {
+  const r = watcherConfig.deleteWatcher(name);
+  if (!r.ok) return r;
+  const e = runtime.get(name);
+  if (e) clearTimer(e);
+  runtime.delete(name);
+  log(`ACTION watcher name=${name} deleted`);
+  return { ok: true, name };
+}
+
+/**
+ * Folder choices for the editor's "where does this run" picker: every discovered
+ * checkout path. Uses the running watcher's repo map when there is one, else
+ * builds a throwaway one (same TTL cache either way).
+ */
+let pickerRepos = null;
+function listFolders() {
+  const repoMap =
+    (deps && deps.repoMap) ||
+    (pickerRepos =
+      pickerRepos ||
+      repos.create({
+        base: config.WATCHERS_CODEBASE_DIR,
+        preferDir: config.WATCHERS_PREFER_CHECKOUT,
+      }));
+  return { base: config.WATCHERS_CODEBASE_DIR, dirs: repoMap.dirs() };
+}
+
+/**
+ * The known bots, for the config UI: reference + label from config, and the
+ * live identity (`auth.test`) so the dialog can say who it's signed in as. Never
+ * returns a token. A bot whose reference doesn't resolve, or whose token Slack
+ * rejects, comes back with `error` instead of failing the whole list.
+ */
+async function listBots() {
+  const cfg = watcherConfig.load();
+  const view = watcherConfig.editableConfig();
+  const out = [];
+  for (const b of view.bots) {
+    const token = cfg.bots[b.ref] ? cfg.bots[b.ref].token : null;
+    const row = { ...b, identity: null, error: null };
+    if (!token) {
+      row.error = `token reference "${b.tokenRef}" could not be read`;
+    } else {
+      try {
+        const auth = await createClient(token).authTest();
+        row.identity = { user: auth.user || null, team: auth.team || null, botId: auth.bot_id || null };
+      } catch (e) {
+        row.error = e.message;
+      }
+    }
+    out.push(row);
+  }
+  return { bots: out };
+}
+
+/**
+ * Live channel list for a bot — what the channel picker offers. Read-only
+ * (`users.conversations`), paginated + capped like discovery, and degrades to
+ * public-only when the token lacks `groups:read`.
+ */
+async function listChannels(botRef = watcherConfig.DEFAULT_BOT_REF) {
+  const cfg = watcherConfig.load();
+  const bot = cfg.bots[botRef];
+  if (!bot) return { ok: false, error: `unknown bot "${botRef}"` };
+  if (!bot.token) return { ok: false, error: `token reference "${bot.tokenRef}" could not be read` };
+  const client = createClient(bot.token);
+  for (const types of ['public_channel,private_channel', 'public_channel']) {
+    const channels = [];
+    let cursor;
+    try {
+      for (let page = 0; page < DISCOVER_MAX_PAGES; page++) {
+        const res = await client.userConversations({ types, ...(cursor ? { cursor } : {}) });
+        for (const c of res.channels || []) {
+          if (c && c.id) {
+            channels.push({
+              id: c.id,
+              name: c.name || null,
+              isPrivate: !!c.is_private,
+              archived: !!c.is_archived,
+            });
+          }
+        }
+        cursor = res.response_metadata && res.response_metadata.next_cursor;
+        if (!cursor) break;
+      }
+      return { ok: true, botRef, private: types.includes('private_channel'), channels };
+    } catch (e) {
+      if (!/missing_scope/.test(e.message) || types === 'public_channel') {
+        return { ok: false, error: e.message };
+      }
+    }
+  }
+  return { ok: true, botRef, private: false, channels: [] };
+}
+
 function stopAll() {
   for (const e of runtime.values()) {
     clearTimer(e);
@@ -590,6 +807,7 @@ function stopAll() {
 function startAll() {
   for (const name of runtime.keys()) watcherConfig.setEnabled(name, true);
   const cfg = watcherConfig.load();
+  noteConfigMeta(cfg);
   if (cfg.watchers.length && !cfg.token) return { ok: false, error: 'no usable Slack bot token' };
   if (!deps && cfg.token) deps = buildDeps(cfg);
   for (const w of cfg.watchers) {
@@ -622,6 +840,9 @@ function getStatus() {
     repos: deps ? deps.repoMap.list().length : 0,
     watchers: [...runtime.values()].map((e) => ({
       name: e.name,
+      // trigger type + the config-only bits the tab shows (a schedule watcher's
+      // prompt/schedule, any watcher's rule count) — see `configMeta`
+      ...(configMeta.get(e.name) || {}),
       discover: !!e.discover,
       // explicit config channels plus any actually watched (discovered) ones
       channels: [...new Set([...(e.channels || []), ...state.channelsOf(e.name)])].map((id) => {
@@ -641,7 +862,9 @@ function getStatus() {
       lastPollAt: e.lastPollAt,
       staged: e.staged,
       lastError: e.lastError,
-    })),
+    }))
+      // config order, then name — deterministic across restarts, pauses, renames
+      .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || a.name.localeCompare(b.name)),
   };
 }
 
@@ -654,10 +877,15 @@ function _reset() {
   deps = null;
 }
 
-/** Test hook: inject a fake deps builder and/or a no-op timer factory. */
+/**
+ * Test hook: inject a fake deps builder, a no-op timer factory, and/or a fake
+ * Slack client factory (used by listBots/listChannels, which are otherwise the
+ * only network callers outside the poll loop).
+ */
 function _setTestHooks(hooks = {}) {
   if (hooks.buildDeps) buildDeps = hooks.buildDeps;
   if (hooks.scheduleInterval) scheduleInterval = hooks.scheduleInterval;
+  if (hooks.createClient) createClient = hooks.createClient;
 }
 
 module.exports = {
@@ -668,6 +896,12 @@ module.exports = {
   runNow,
   setChannelCursor,
   setChannelPaused,
+  upsertWatcher,
+  removeWatcher,
+  listBots,
+  listChannels,
+  listFolders,
+  reconcile,
   stopAll,
   startAll,
   getStatus,

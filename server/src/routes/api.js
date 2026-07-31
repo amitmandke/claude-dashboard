@@ -12,6 +12,10 @@ const aiTitles = require('../services/aiTitles');
 const transcript = require('../services/transcript');
 const candidates = require('../services/candidates/store');
 const watchers = require('../services/watchers');
+const watcherConfig = require('../services/watchers/config');
+
+/** Fixed /api/watchers/* sub-paths, so they can never be read as a watcher name. */
+const RESERVED_WATCHER_PATHS = new Set(['config', 'bots', 'channels', 'folders', 'stop-all', 'start-all']);
 
 function json(res, code, obj) {
   res.writeHead(code, { 'Content-Type': 'application/json' });
@@ -203,12 +207,57 @@ async function handle(req, res, url) {
     return true;
   }
 
-  // ---- Slack watchers: read-only status (last poll, staged counts, errors).
-  // Watchers are configured in ~/.claude-dashboard/watchers.json and run in the
-  // server process; a management UI is a deferred follow-up (see docs/proposals.md).
+  // ---- watchers: live status (last poll, staged counts, errors) + management.
+  // Watchers live in ~/.claude-dashboard/watchers.json (schema v2) and run in
+  // the server process. Editing goes through watchers.upsertWatcher, which
+  // validates fail-closed, patches the file (merge, don't replace) and
+  // reconciles just that watcher's runtime — no restart needed.
   if (url.pathname === '/api/watchers' && req.method === 'GET') {
     json(res, 200, watchers.getStatus());
     return true;
+  }
+
+  // the editable config: v2 raw per watcher (what a save patches, so a Raw-JSON
+  // view round-trips) + the bot list as references, never resolved secrets
+  if (url.pathname === '/api/watchers/config' && req.method === 'GET') {
+    json(res, 200, watcherConfig.editableConfig());
+    return true;
+  }
+
+  // bots with their live identity (auth.test) — for the bot picker
+  if (url.pathname === '/api/watchers/bots' && req.method === 'GET') {
+    try {
+      json(res, 200, await watchers.listBots());
+    } catch (e) {
+      json(res, 500, { error: e.message });
+    }
+    return true;
+  }
+
+  // live channel list for one bot — for the channel picker
+  if (url.pathname === '/api/watchers/channels' && req.method === 'GET') {
+    try {
+      const r = await watchers.listChannels(url.searchParams.get('botRef') || undefined);
+      json(res, r.ok === false ? 400 : 200, r);
+    } catch (e) {
+      json(res, 500, { error: e.message });
+    }
+    return true;
+  }
+
+  // folder choices for the editor's "where does this run" pickers
+  if (url.pathname === '/api/watchers/folders' && req.method === 'GET') {
+    json(res, 200, watchers.listFolders());
+    return true;
+  }
+
+  // create a watcher: the body is the watcher patch ({ name, enabled, trigger,
+  // rules, prompt, poll, action }); a 400 carries the fail-closed reason.
+  if (url.pathname === '/api/watchers' && req.method === 'POST') {
+    const body = await readBody(req);
+    if (!body || !body.name) return json(res, 400, { error: 'name is required' }), true;
+    const r = watchers.upsertWatcher(null, body);
+    return json(res, r.ok === false ? 400 : 200, r), true;
   }
 
   // per-watcher controls: pause/resume (persist to watchers.json) and run-now
@@ -250,6 +299,21 @@ async function handle(req, res, url) {
     if (!body || !body.channel) return json(res, 400, { error: 'channel is required' }), true;
     const r = watchers.setChannelPaused(name, body.channel, chpMatch[2] === 'pause');
     return json(res, r && r.ok === false ? 400 : 200, r), true;
+  }
+  // update (PUT/POST) or delete one watcher by name. Kept last so the fixed
+  // sub-paths above (stop-all/start-all/config/bots/channels) win the match.
+  const wEditMatch = url.pathname.match(/^\/api\/watchers\/([^/]+)$/);
+  if (wEditMatch && ['PUT', 'POST', 'DELETE'].includes(req.method)) {
+    const name = decodeURIComponent(wEditMatch[1]);
+    if (RESERVED_WATCHER_PATHS.has(name)) return json(res, 404, { error: 'not found' }), true;
+    if (req.method === 'DELETE') {
+      const r = watchers.removeWatcher(name);
+      return json(res, r.ok === false ? 400 : 200, r), true;
+    }
+    const body = await readBody(req);
+    if (!body || typeof body !== 'object') return json(res, 400, { error: 'a watcher patch is required' }), true;
+    const r = watchers.upsertWatcher(name, body);
+    return json(res, r.ok === false ? 400 : 200, r), true;
   }
 
   // ---- candidate sessions: a launchable, prioritized pending list a producer

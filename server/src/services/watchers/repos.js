@@ -66,32 +66,48 @@ function findCheckouts(base, depth, out = []) {
 }
 
 /**
+ * Every checkout under `base` with its `owner/repo` and parent-folder name —
+ * including DUPLICATES of the same repo, which `buildMap` collapses. The
+ * duplicates are the point for a UI: they are what `preferDir` chooses between.
+ * One filesystem walk; `buildMap` derives from this.
+ */
+function listCheckouts(base, { depth = 2 } = {}) {
+  const out = [];
+  for (const dir of findCheckouts(base, depth)) {
+    const key = parseRemoteUrl(originUrl(dir));
+    if (key) out.push({ key, dir, parent: path.basename(path.dirname(dir)) });
+  }
+  return out;
+}
+
+/** `owner/repo` → local path, preferring a checkout whose parent is `preferDir`. */
+function mapFromCheckouts(checkouts, preferDir = null) {
+  const map = new Map();
+  for (const { key, dir, parent } of checkouts) {
+    if (!map.has(key)) map.set(key, dir);
+    else if (preferDir && parent === preferDir) map.set(key, dir); // preferred overrides first-found
+  }
+  return map;
+}
+
+/**
  * Build `owner/repo` → local path from all checkouts under `base`. `preferDir`
  * is the parent-folder name that wins ties (e.g. 'acme'). Pure over the
  * filesystem: pass a small `base` in tests.
  */
 function buildMap(base, { depth = 2, preferDir = null } = {}) {
-  const map = new Map();
-  for (const dir of findCheckouts(base, depth)) {
-    const key = parseRemoteUrl(originUrl(dir));
-    if (!key) continue;
-    const existing = map.get(key);
-    if (!existing) {
-      map.set(key, dir);
-    } else if (preferDir && path.basename(path.dirname(dir)) === preferDir) {
-      map.set(key, dir); // preferred checkout overrides first-found
-    }
-  }
-  return map;
+  return mapFromCheckouts(listCheckouts(base, { depth }), preferDir);
 }
 
 function create({ base, depth = 2, preferDir = null, ttlMs = 5 * 60 * 1000, now = Date.now } = {}) {
   let map = null;
+  let checkouts = null;
   let builtAt = 0;
 
   function ensure() {
     if (!map || now() - builtAt > ttlMs) {
-      map = buildMap(base, { depth, preferDir });
+      checkouts = listCheckouts(base, { depth });
+      map = mapFromCheckouts(checkouts, preferDir);
       builtAt = now();
     }
     return map;
@@ -107,6 +123,15 @@ function create({ base, depth = 2, preferDir = null, ttlMs = 5 * 60 * 1000, now 
     list() {
       return [...ensure().keys()].sort();
     },
+    /**
+     * Every discovered checkout path — for the editor's folder picker. Derived
+     * from the pre-collapse list, so BOTH copies of a twice-cloned repo appear
+     * (the map keeps only one).
+     */
+    dirs() {
+      ensure();
+      return [...new Set(checkouts.map((c) => c.dir))].sort();
+    },
     _rebuild() {
       map = null;
       return ensure();
@@ -114,4 +139,4 @@ function create({ base, depth = 2, preferDir = null, ttlMs = 5 * 60 * 1000, now 
   };
 }
 
-module.exports = { create, buildMap, parseRemoteUrl, originUrl, findCheckouts };
+module.exports = { create, buildMap, listCheckouts, mapFromCheckouts, parseRemoteUrl, originUrl, findCheckouts };

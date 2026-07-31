@@ -79,6 +79,8 @@ function createClient({ token, request = httpsRequest, wait = sleep } = {}) {
       call('users.conversations', { types: 'public_channel,private_channel', exclude_archived: true, limit: 200, ...p }),
     /** A shareable link to a message, used as a candidate's `ref`. */
     permalink: (p) => call('chat.getPermalink', p),
+    /** Who this token is — bot identity for the config UI. Needs no extra scope. */
+    authTest: () => call('auth.test'),
     call,
   };
 }

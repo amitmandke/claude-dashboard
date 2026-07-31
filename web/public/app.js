@@ -956,6 +956,7 @@ document.getElementById('new-candidate-form').addEventListener('submit', (e) => 
 
 const watchTemplate = document.getElementById('watcher-template');
 let watchEditOpen = false; // true while an inline channel time-editor is open (pauses re-render)
+let watchFlashName = null; // a just-saved watcher: scroll to its card once and flash it
 
 // Re-pull watcher status and re-render now, so a Pause/Resume/Run reflects
 // immediately instead of waiting for the next SSE tick.
@@ -981,11 +982,29 @@ function watchAction(name, verb) {
   };
 }
 
+// The two watcher types the UI names: a Slack watcher, and a Generic watcher
+// (a prompt of your own on a cadence — `trigger.type: 'schedule'` in config).
+const TRIGGER_GLYPH = { slack: '⌗', schedule: '◷' };
+const TYPE_LABEL = { slack: 'slack', schedule: 'generic' };
+
+/** "every 30m" / "daily 09:00" / a cron expression — a schedule in words. */
+function scheduleText(w) {
+  if (w.cron) return `cron ${w.cron}`;
+  if (w.at) return `daily ${w.at}`;
+  if (!w.everyMinutes) return '';
+  return w.everyMinutes % 60 === 0 && w.everyMinutes >= 60
+    ? `every ${w.everyMinutes / 60}h`
+    : `every ${w.everyMinutes}m`;
+}
+
 function buildWatcher(w) {
   const card = watchTemplate.content.cloneNode(true).querySelector('.watch-card');
+  const type = w.type || w.trigger || 'slack';
+  const schedule = type === 'schedule';
   card.dataset.state = w.state;
   card.querySelector('.watch-name').textContent = w.name;
-  card.querySelector('.watch-trigger').textContent = w.trigger ? `#${w.trigger}` : '';
+  card.querySelector('.watch-trigger').textContent =
+    `${TRIGGER_GLYPH[type] || '·'} ${TYPE_LABEL[type] || type}`;
   card.querySelector('.watch-auto').hidden = !w.discover;
 
   const stateEl = card.querySelector('.watch-state');
@@ -995,28 +1014,56 @@ function buildWatcher(w) {
   // a pulsing dot when the watcher is actively running — the at-a-glance "alive"
   card.querySelector('.watch-live').hidden = w.state !== 'running';
 
-  renderWatchChannels(card.querySelector('.watch-channels'), w);
+  // a schedule watcher has no channels — it shows the prompt it will run instead
+  const body = card.querySelector('.watch-body');
+  body.hidden = !schedule;
+  if (schedule) card.querySelector('.watch-prompt').textContent = w.prompt || '(no prompt)';
+  else renderWatchChannels(card.querySelector('.watch-channels'), w);
 
   // poll time is the real (uniform) liveness signal — lead with it, relative + bright
   const poll = card.querySelector('.watch-lastpoll');
-  poll.textContent = w.lastPollAt ? `polled ${agoText(w.lastPollAt)}` : 'not polled yet';
-  poll.title = w.lastPollAt ? `last poll ${fmtTime(w.lastPollAt)}` : '';
-  poll.classList.toggle('live', w.state === 'running' && !!w.lastPollAt);
-  card.querySelector('.watch-every').textContent = w.everySeconds ? `every ${w.everySeconds}s` : '';
+  if (schedule) {
+    poll.textContent = scheduleText(w);
+  } else {
+    poll.textContent = w.lastPollAt ? `polled ${agoText(w.lastPollAt)}` : 'not polled yet';
+    poll.title = w.lastPollAt ? `last poll ${fmtTime(w.lastPollAt)}` : '';
+    poll.classList.toggle('live', w.state === 'running' && !!w.lastPollAt);
+  }
+  card.querySelector('.watch-every').textContent =
+    !schedule && w.everySeconds ? `every ${w.everySeconds}s` : '';
   const n = (w.channels || []).length;
-  card.querySelector('.watch-channelcount').textContent = n ? `${n} channel${n === 1 ? '' : 's'}` : '';
+  card.querySelector('.watch-channelcount').textContent =
+    !schedule && n ? `${n} channel${n === 1 ? '' : 's'}` : '';
   card.querySelector('.watch-staged').textContent = `${w.staged || 0} staged`;
+  // the chip carries what governs the watcher: rule count (slack) or skill (schedule)
+  const rulesEl = card.querySelector('.watch-rules');
+  const chip = schedule ? (w.skill ? `/${w.skill}` : '') : (w.rules ? `${w.rules} rule${w.rules === 1 ? '' : 's'}` : '');
+  rulesEl.hidden = !chip;
+  rulesEl.textContent = chip;
 
   const errEl = card.querySelector('.watch-error');
   errEl.hidden = !w.lastError;
   if (w.lastError) errEl.textContent = '⚠ ' + w.lastError;
 
+  // after a save the grid rebuilds; point at the card that changed instead of
+  // leaving it to be found among the others
+  if (watchFlashName === w.name) {
+    watchFlashName = null;
+    card.classList.add('just-saved');
+    requestAnimationFrame(() => card.scrollIntoView({ block: 'nearest', behavior: 'smooth' }));
+  }
+  card.querySelector('.watch-edit').addEventListener('click', () => openWatcherEditor(w.name));
+  card.querySelector('.watch-delete').addEventListener('click', () => deleteWatcher(w.name));
+
   const pauseBtn = card.querySelector('.watch-pause');
   const resumeBtn = card.querySelector('.watch-resume');
   const runBtn = card.querySelector('.watch-run');
   const paused = w.state === 'paused' || w.state === 'disabled';
-  pauseBtn.hidden = paused;
-  resumeBtn.hidden = !paused;
+  // Pause/Resume/Run-now are poll-loop controls; a schedule watcher isn't run by
+  // it yet, so offering them would promise something that can't happen.
+  pauseBtn.hidden = paused || schedule;
+  resumeBtn.hidden = !paused || schedule;
+  runBtn.hidden = schedule;
   pauseBtn.addEventListener('click', watchAction(w.name, 'pause'));
   resumeBtn.addEventListener('click', watchAction(w.name, 'resume'));
   runBtn.addEventListener('click', watchAction(w.name, 'run'));
@@ -1272,6 +1319,729 @@ document.getElementById('watch-startall').addEventListener('click', async () => 
     toast('All watchers started', true); await refreshWatchers();
   } catch (err) { toast('Start-all failed: ' + err.message); }
 });
+
+// ------------------------------------------------------- watcher create / edit
+
+// One dialog, two stage sets (Slack / Schedule). The editor holds a working copy
+// of the watcher's v2 raw config; Save sends it as a patch to the API, which
+// validates fail-closed and merges it onto what's stored (unknown keys and
+// hand-written `//` comments therefore survive a round trip through this UI).
+const wdDialog = document.getElementById('watcher-dialog');
+const wtDialog = document.getElementById('watcher-trigger-dialog');
+const wdEl = (id) => document.getElementById(id);
+
+let skillCatalog = []; // [{ name, description, scope }] — for a rule's skill picker
+// folder picker choices: every discovered checkout + recent project dirs (the
+// same source the New Session launcher uses)
+let folderData = { dirs: [], projects: [] };
+
+const WD_OTHER = ' other'; // sentinel option value: "type a path myself"
+
+/**
+ * Fill a <select> + its sibling "other" text input from a list of
+ * `{ value, label, group }` choices, preselecting `value`. A stored value that
+ * isn't in the list (a folder that moved, a name typed by hand) selects Other…
+ * and prefills it, so the form never silently drops what config already says.
+ */
+function wdFillPicker(id, choices, value) {
+  const sel = wdEl(id);
+  const other = wdEl(`${id}-other`);
+  sel.textContent = '';
+  let group = null;
+  let groupEl = null;
+  for (const c of choices) {
+    const o = document.createElement('option');
+    o.value = c.value;
+    o.textContent = c.label;
+    if (c.group) {
+      if (c.group !== group) {
+        group = c.group;
+        groupEl = document.createElement('optgroup');
+        groupEl.label = c.group;
+        sel.append(groupEl);
+      }
+      groupEl.append(o);
+    } else {
+      group = null;
+      sel.append(o);
+    }
+  }
+  const o = document.createElement('option');
+  o.value = WD_OTHER;
+  o.textContent = 'Other…';
+  sel.append(o);
+
+  const known = choices.some((c) => c.value === (value || ''));
+  sel.value = known ? (value || '') : WD_OTHER;
+  other.hidden = sel.value !== WD_OTHER;
+  other.value = known ? '' : (value || '');
+}
+
+/** The effective value of a select + "other" pair. */
+function wdPickerValue(id) {
+  const sel = wdEl(id);
+  return sel.value === WD_OTHER ? wdEl(`${id}-other`).value.trim() : sel.value;
+}
+
+/** Fill a skill <select> from the installed catalog, keeping an unknown stored value. */
+function wdFillSkillSelect(sel, value) {
+  sel.textContent = '';
+  const none = document.createElement('option');
+  none.value = '';
+  none.textContent = '(no skill)';
+  sel.append(none);
+  for (const s of skillCatalog) {
+    const o = document.createElement('option');
+    o.value = s.name;
+    o.textContent = `/${s.name}${s.scope && s.scope !== 'user' ? ` · ${s.scope}` : ''}`;
+    sel.append(o);
+  }
+  if (value && !skillCatalog.some((s) => s.name === value)) {
+    const o = document.createElement('option'); // a skill that isn't installed here
+    o.value = value;
+    o.textContent = `/${value} (not found)`;
+    sel.append(o);
+  }
+  sel.value = value || '';
+}
+
+function wdFolderChoices(noneLabel) {
+  const seen = new Set();
+  const out = [{ value: '', label: noneLabel }];
+  for (const p of folderData.projects) {
+    if (seen.has(p)) continue;
+    seen.add(p);
+    out.push({ value: p, label: p, group: 'Recent folders' });
+  }
+  for (const d of folderData.dirs) {
+    if (seen.has(d)) continue;
+    seen.add(d);
+    out.push({ value: d, label: d, group: 'Repo checkouts' });
+  }
+  return out;
+}
+
+const wed = {
+  kind: 'slack',       // 'slack' | 'schedule'
+  editing: null,       // existing watcher name, or null when creating
+  chanMode: 'auto',    // 'auto' | 'pick'
+  schedMode: 'every',  // 'every' | 'daily' | 'cron'
+  channels: [],        // picked channel ids
+  live: [],            // channels the bot can see (from /api/watchers/channels)
+  rules: [],           // [{ name, about, mentions:[], actionType, skill, prompt }]
+  mentions: [],        // watcher-level mention allowlist (trigger.mentions)
+  raw: null,           // the stored raw watcher, when editing
+  rawOpen: false,
+};
+
+function wdSetError(msg) {
+  const el = wdEl('wd-error');
+  el.hidden = !msg;
+  el.textContent = msg || '';
+}
+
+/** Build the patch that will be saved — also what the Raw JSON view shows. */
+function wdPatch() {
+  const name = wdEl('wd-name').value.trim();
+  if (wed.kind === 'schedule') {
+    const trigger = { type: 'schedule' };
+    if (wed.schedMode === 'cron') trigger.cron = wdEl('wd-cron').value.trim();
+    else if (wed.schedMode === 'daily') trigger.at = wdEl('wd-at').value.trim();
+    else trigger.everyMinutes = parseInt(wdEl('wd-every').value, 10) || 60;
+    return {
+      name,
+      trigger,
+      skill: wdEl('wd-sched-skill').value,
+      prompt: wdEl('wd-prompt').value.trim(),
+      action: { cwd: wdPickerValue('wd-cwd2') },
+    };
+  }
+  return {
+    name,
+    trigger: {
+      type: 'slack',
+      botRef: wdEl('wd-bot').value || 'default',
+      mentions: wed.mentions,
+      channels: wed.chanMode === 'auto' ? 'auto' : wed.channels,
+    },
+    rules: wed.rules.map((r) => ({
+      name: r.name,
+      about: r.about,
+      action: r.actionType === 'prompt'
+        ? { type: 'prompt', prompt: r.prompt }
+        : { type: 'skill', skill: r.skill },
+    })),
+    poll: { everySeconds: parseInt(wdEl('wd-poll').value, 10) || 120 },
+    action: { cwd: wdPickerValue('wd-cwd') },
+  };
+}
+
+/** The plain-language "what this will do" line, kept in sync with the fields. */
+function wdSummary() {
+  const b = (s) => `<b>${escapeHtml(String(s))}</b>`;
+  if (wed.kind === 'schedule') {
+    const when = wed.schedMode === 'cron'
+      ? `on cron ${b(wdEl('wd-cron').value.trim() || '—')}`
+      : wed.schedMode === 'daily'
+        ? `every day at ${b(wdEl('wd-at').value.trim() || '—')}`
+        : `every ${b((wdEl('wd-every').value || '60') + ' min')}`;
+    const sk = wdEl('wd-sched-skill').value;
+    const as = sk ? ` under ${b('/' + sk)}` : '';
+    return `Runs your prompt${as} as a session ${when}; it stages candidates and closes. ` +
+      'Not executed yet — the runner still handles Slack triggers only.';
+  }
+  const bot = wdEl('wd-bot');
+  const botName = (bot.selectedOptions[0] && bot.selectedOptions[0].textContent) || 'a bot';
+  const where = wed.chanMode === 'auto'
+    ? `every channel it is in${wed.live.length ? ` (${wed.live.length} today)` : ''}`
+    : `${wed.channels.length} of ${wed.live.length || '?'} channels`;
+  const who = wed.mentions.length ? wed.mentions.map((m) => b(m)).join(', ') : b('nobody yet');
+  const rules = wed.rules.length
+    ? `${b(wed.rules.length)} rule${wed.rules.length === 1 ? '' : 's'} stage a candidate on a match`
+    : 'with no rules, the classifier picks a skill itself';
+  return `As ${b(botName)}, watch ${b(where)} for mentions of ${who}; ${rules}. ` +
+    `Polls every ${b((wdEl('wd-poll').value || '120') + 's')}.`;
+}
+
+function wdSync() {
+  wdEl('wd-summary').innerHTML = wdSummary();
+  if (wed.rawOpen) wdEl('wd-raw').value = JSON.stringify(wdPatch(), null, 2);
+}
+
+// ---- rules editor
+
+function wdRuleCard(rule, i) {
+  const card = document.createElement('div');
+  card.className = 'rule-card';
+
+  const head = document.createElement('div');
+  head.className = 'rule-card-head';
+  const idx = document.createElement('span');
+  idx.className = 'idx';
+  idx.textContent = `R${i + 1}`;
+  const nameInp = document.createElement('input');
+  nameInp.className = 'nm';
+  nameInp.value = rule.name;
+  nameInp.placeholder = 'rule name (e.g. review-go)';
+  nameInp.addEventListener('input', () => { rule.name = nameInp.value; wdSync(); });
+  const del = document.createElement('button');
+  del.type = 'button';
+  del.className = 'icon-btn danger';
+  del.title = 'Remove this rule';
+  del.textContent = '✕';
+  del.addEventListener('click', () => {
+    wed.rules.splice(i, 1);
+    wdRenderRules();
+    wdSync();
+  });
+  head.append(idx, nameInp, del);
+
+  const body = document.createElement('div');
+  body.className = 'rule-body';
+
+  // WHEN: about (what the message is asking for)
+  const when = document.createElement('div');
+  when.className = 'wt';
+  const whenKey = document.createElement('span');
+  whenKey.className = 'wt-key';
+  whenKey.textContent = 'When';
+  const whenFields = document.createElement('div');
+  whenFields.className = 'wt-fields';
+  const aboutRow = document.createElement('div');
+  aboutRow.className = 'cond';
+  const aboutK = document.createElement('span');
+  aboutK.className = 'k';
+  aboutK.textContent = 'about';
+  const aboutInp = document.createElement('input');
+  aboutInp.className = 'inp';
+  aboutInp.value = rule.about;
+  aboutInp.placeholder = 'reviewing a Go PR';
+  aboutInp.addEventListener('input', () => { rule.about = aboutInp.value; wdSync(); });
+  aboutRow.append(aboutK, aboutInp);
+  whenFields.append(aboutRow);
+  when.append(whenKey, whenFields);
+
+  // THEN: use a skill, or run a prompt
+  const then = document.createElement('div');
+  then.className = 'wt';
+  const thenKey = document.createElement('span');
+  thenKey.className = 'wt-key then';
+  thenKey.textContent = 'Then';
+  const thenFields = document.createElement('div');
+  thenFields.className = 'wt-fields';
+
+  const seg = document.createElement('div');
+  seg.className = 'seg';
+  const skillSel = document.createElement('select');
+  skillSel.className = 'inp';
+  const promptInp = document.createElement('textarea');
+  promptInp.className = 'inp';
+  promptInp.placeholder = 'what the launched session should do';
+  promptInp.value = rule.prompt || '';
+  promptInp.addEventListener('input', () => { rule.prompt = promptInp.value; wdSync(); });
+
+  const applyAction = () => {
+    for (const b of seg.children) b.classList.toggle('on', b.dataset.action === rule.actionType);
+    skillSel.hidden = rule.actionType !== 'skill';
+    promptInp.hidden = rule.actionType !== 'prompt';
+  };
+  for (const [action, label] of [['skill', 'Use a skill'], ['prompt', 'Run a prompt']]) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.action = action;
+    b.textContent = label;
+    b.addEventListener('click', () => { rule.actionType = action; applyAction(); wdSync(); });
+    seg.append(b);
+  }
+
+  wdFillSkillSelect(skillSel, rule.skill);
+  skillSel.addEventListener('change', () => { rule.skill = skillSel.value; wdSync(); });
+
+  const sentence = document.createElement('div');
+  sentence.className = 'rule-sentence';
+  const paint = () => {
+    const about = rule.about ? `about <b>${escapeHtml(rule.about)}</b>` : 'in a watched channel';
+    const act = rule.actionType === 'prompt'
+      ? 'stage it with <b>a custom prompt</b>'
+      : `stage using <b>${escapeHtml(rule.skill || 'no skill')}</b>`;
+    sentence.innerHTML = `When a thread mentions you ${about} → ${act}.`;
+  };
+  paint();
+  for (const el of [aboutInp, skillSel, promptInp]) el.addEventListener('input', paint);
+  skillSel.addEventListener('change', paint);
+  seg.addEventListener('click', paint);
+
+  thenFields.append(seg, skillSel, promptInp);
+  then.append(thenKey, thenFields);
+  applyAction();
+
+  body.append(when, then, sentence);
+  card.append(head, body);
+  return card;
+}
+
+function wdRenderRules() {
+  const box = wdEl('wd-rules');
+  box.textContent = '';
+  wed.rules.forEach((r, i) => box.append(wdRuleCard(r, i)));
+}
+
+// ---- mention chips (trigger.mentions)
+
+function wdRenderMentions() {
+  const box = wdEl('wd-mentions');
+  box.textContent = '';
+  wed.mentions.forEach((m, i) => {
+    const chip = document.createElement('span');
+    chip.className = 'chip';
+    chip.textContent = m;
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.textContent = '✕';
+    x.title = 'Remove';
+    x.addEventListener('click', () => { wed.mentions.splice(i, 1); wdRenderMentions(); wdSync(); });
+    chip.append(x);
+    box.append(chip);
+  });
+  const add = document.createElement('input');
+  add.className = 'add';
+  add.placeholder = wed.mentions.length ? 'add…' : 'U01234ABCD';
+  add.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ',') return;
+    e.preventDefault();
+    const v = add.value.trim().replace(/^<@|>$/g, '');
+    if (v && !wed.mentions.includes(v)) wed.mentions.push(v);
+    wdRenderMentions();
+    wdSync();
+    wdEl('wd-mentions').querySelector('.add').focus();
+  });
+  box.append(add);
+}
+
+// ---- channels
+
+function wdRenderChannels() {
+  const list = wdEl('wd-chan-list');
+  const filter = wdEl('wd-chan-filter').value.trim().toLowerCase();
+  // In auto mode the list is still shown — you should be able to see exactly what
+  // the bot covers — but it is ticked-and-inert, since "all" isn't half-pickable.
+  const auto = wed.chanMode === 'auto';
+  list.classList.toggle('read-only', auto);
+  list.textContent = '';
+  const shown = wed.live.filter((c) => !filter || (c.name || c.id).toLowerCase().includes(filter));
+  if (!wed.live.length) {
+    const p = document.createElement('div');
+    p.className = 'loading';
+    p.textContent = wed.liveError || 'reading the bot\u2019s channels…';
+    list.append(p);
+  }
+  for (const c of shown) {
+    const picked = auto || wed.channels.includes(c.id);
+    const row = document.createElement('div');
+    row.className = 'chan-opt' + (picked ? ' on' : '');
+    const box = document.createElement('span');
+    box.className = 'box';
+    box.textContent = picked ? '✓' : '';
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    nm.textContent = c.name ? `#${c.name}` : c.id;
+    row.append(box, nm);
+    if (c.archived) {
+      const tag = document.createElement('span');
+      tag.className = 'tag';
+      tag.textContent = 'archived';
+      row.append(tag);
+    }
+    if (!auto) {
+      row.addEventListener('click', () => {
+        const at = wed.channels.indexOf(c.id);
+        if (at === -1) wed.channels.push(c.id);
+        else wed.channels.splice(at, 1);
+        wdRenderChannels();
+        wdSync();
+      });
+    }
+    list.append(row);
+  }
+  wdEl('wd-chan-count').textContent = !wed.live.length
+    ? ''
+    : auto ? `all ${wed.live.length}` : `${wed.channels.length} of ${wed.live.length}`;
+}
+
+async function wdLoadChannels() {
+  const botRef = wdEl('wd-bot').value || 'default';
+  wed.live = [];
+  wed.liveError = '';
+  wdEl('wd-chan-refresh').classList.add('spinning');
+  wdRenderChannels();
+  try {
+    const r = await (await fetch(`/api/watchers/channels?botRef=${encodeURIComponent(botRef)}`)).json();
+    if (r.ok === false) throw new Error(r.error || 'could not list channels');
+    wed.live = (r.channels || []).sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id));
+  } catch (err) {
+    wed.liveError = `Could not list channels — ${err.message}`;
+  }
+  wdEl('wd-chan-refresh').classList.remove('spinning');
+  wdRenderChannels();
+  wdSync();
+}
+
+async function wdLoadBots(selected) {
+  const sel = wdEl('wd-bot');
+  sel.textContent = '';
+  let bots = [];
+  try {
+    bots = (await (await fetch('/api/watchers/bots')).json()).bots || [];
+  } catch { /* shown as "no bots" below */ }
+  for (const b of bots) {
+    const o = document.createElement('option');
+    o.value = b.ref;
+    o.textContent = b.identity && b.identity.user ? `${b.ref} — @${b.identity.user}` : b.ref;
+    sel.append(o);
+  }
+  if (!bots.length) {
+    const o = document.createElement('option');
+    o.value = 'default';
+    o.textContent = 'default (none configured)';
+    sel.append(o);
+  }
+  sel.value = selected && bots.some((b) => b.ref === selected) ? selected : (bots[0] ? bots[0].ref : 'default');
+
+  const bot = bots.find((b) => b.ref === sel.value);
+  const conn = wdEl('wd-bot-conn');
+  const txt = wdEl('wd-bot-conn-txt');
+  conn.hidden = !bot;
+  if (bot) {
+    conn.classList.toggle('bad', !!bot.error);
+    if (bot.error) {
+      txt.textContent = `${bot.tokenRef || 'token'} — ${bot.error}`;
+    } else {
+      const id = bot.identity || {};
+      txt.innerHTML = `Signed in as <b>@${escapeHtml(id.user || '?')}</b>` +
+        (id.team ? ` in <b>${escapeHtml(id.team)}</b>` : '') +
+        ` · token from <b>${escapeHtml(bot.tokenRef || '')}</b>`;
+    }
+  }
+  return bots;
+}
+
+// ---- open / save / delete
+
+function wdSetKind(kind) {
+  wed.kind = kind;
+  wdEl('wd-kind').textContent = kind === 'schedule' ? 'Generic' : 'Slack';
+  wdEl('wd-slack-stages').hidden = kind !== 'slack';
+  wdEl('wd-schedule-stages').hidden = kind !== 'schedule';
+}
+
+function wdSetChanMode(mode) {
+  const wasAuto = wed.chanMode === 'auto';
+  wed.chanMode = mode;
+  for (const b of wdEl('wd-chan-mode').children) b.classList.toggle('on', b.dataset.mode === mode);
+  // Switching auto → pick with nothing stored would leave the watcher fail-closed
+  // (no channels = doesn't run), so start from what auto covered and let the user
+  // untick. An existing explicit list is left alone.
+  if (mode === 'pick' && wasAuto && !wed.channels.length) {
+    wed.channels = wed.live.map((c) => c.id);
+  }
+  wdRenderChannels();
+}
+
+function wdSetSchedMode(mode) {
+  wed.schedMode = mode;
+  for (const b of wdEl('wd-sched-mode').children) b.classList.toggle('on', b.dataset.mode === mode);
+  wdEl('wd-every-wrap').hidden = mode !== 'every';
+  wdEl('wd-at-wrap').hidden = mode !== 'daily';
+  wdEl('wd-cron-wrap').hidden = mode !== 'cron';
+}
+
+/**
+ * Open the editor. `name` = edit that watcher (its stored raw is fetched from
+ * /api/watchers/config), or null + `kind` to create a new one.
+ */
+async function openWatcherEditor(name, kind) {
+  wdSetError('');
+  wed.editing = name || null;
+  wed.rules = [];
+  wed.mentions = [];
+  wed.channels = [];
+  wed.live = [];
+  wed.liveError = '';
+  wed.rawOpen = false;
+  wdEl('wd-raw').hidden = true;
+  wdEl('wd-raw-toggle').textContent = '▸ Raw JSON';
+  wdEl('wd-raw-toggle').setAttribute('aria-expanded', 'false');
+
+  try {
+    const [sk, fo, pr] = await Promise.all([
+      fetch('/api/skills?cwd=').then((r) => r.json()),
+      fetch('/api/watchers/folders').then((r) => r.json()),
+      fetch('/api/projects').then((r) => r.json()),
+    ]);
+    skillCatalog = sk.skills || [];
+    folderData = { dirs: fo.dirs || [], projects: pr.projects || [] };
+  } catch {
+    // the pickers still offer "(none)" and "Other…", so the form stays usable
+    skillCatalog = [];
+    folderData = { dirs: [], projects: [] };
+  }
+
+  let raw = {};
+  if (name) {
+    try {
+      const cfg = await (await fetch('/api/watchers/config')).json();
+      const found = (cfg.watchers || []).find((w) => w.name === name);
+      if (!found) throw new Error(`"${name}" is not in the config file`);
+      raw = found.raw || {};
+    } catch (err) {
+      toast(`Could not load ${name}: ${err.message}`);
+      return;
+    }
+  }
+  wed.raw = raw;
+  const trigger = raw.trigger || {};
+  wdSetKind(kind || trigger.type || 'slack');
+
+  wdEl('wd-eyebrow').textContent = name ? 'Edit watcher' : 'New watcher';
+  wdEl('wd-submit').textContent = name ? 'Save changes' : 'Create watcher';
+  wdEl('wd-delete').hidden = !name;
+  wdEl('wd-name').value = raw.name || '';
+
+  const action = raw.action || {};
+  if (wed.kind === 'schedule') {
+    wdSetSchedMode(trigger.cron ? 'cron' : trigger.at ? 'daily' : 'every');
+    wdEl('wd-every').value = trigger.everyMinutes || 60;
+    wdEl('wd-at').value = trigger.at || '';
+    wdEl('wd-cron').value = trigger.cron || '';
+    wdFillSkillSelect(wdEl('wd-sched-skill'), raw.skill || '');
+    wdEl('wd-prompt').value = raw.prompt || '';
+    wdFillPicker('wd-cwd2', wdFolderChoices('(none — the session picks)'), action.cwd);
+  } else {
+    wed.mentions = Array.isArray(trigger.mentions) ? [...trigger.mentions] : [];
+    wed.rules = (Array.isArray(raw.rules) ? raw.rules : []).map((r) => {
+      const a = (r && r.action) || {};
+      return {
+        name: r.name || '',
+        about: r.about || '',
+        actionType: a.type === 'prompt' ? 'prompt' : 'skill',
+        skill: a.skill || '',
+        prompt: a.prompt || '',
+      };
+    });
+    wdEl('wd-poll').value = (raw.poll && raw.poll.everySeconds) || 120;
+    wdFillPicker('wd-cwd', wdFolderChoices('(none — pick it at launch)'), action.cwd);
+    const auto = trigger.channels === 'auto' || trigger.channels === undefined;
+    wed.channels = Array.isArray(trigger.channels) ? [...trigger.channels] : [];
+    wdRenderMentions();
+    wdRenderRules();
+    await wdLoadBots(trigger.botRef);
+    wdSetChanMode(auto ? 'auto' : 'pick');
+    wdLoadChannels(); // fresh every open, so an edit shows the bot's channels as they are now
+  }
+  wdSyncCadences();
+  wdSync();
+  watchEditOpen = true; // stop the SSE re-render from rebuilding the tab under us
+  wdDialog.showModal();
+}
+
+async function saveWatcher() {
+  let patch;
+  if (wed.rawOpen) {
+    try {
+      patch = JSON.parse(wdEl('wd-raw').value);
+    } catch (err) {
+      wdSetError(`Raw JSON is not valid: ${err.message}`);
+      return;
+    }
+  } else {
+    patch = wdPatch();
+  }
+  if (!patch.name) return wdSetError('A name is required.');
+
+  const url = wed.editing ? `/api/watchers/${encodeURIComponent(wed.editing)}` : '/api/watchers';
+  try {
+    const res = await fetch(url, {
+      method: wed.editing ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    });
+    const r = await res.json();
+    if (!res.ok || r.ok === false) throw new Error(r.error || 'save failed');
+    closeWatcherEditor();
+    watchFlashName = r.name;
+    toast(`Watcher ${r.name} ${r.created ? 'created' : 'saved'} — ${r.state}`, true);
+    await refreshWatchers();
+  } catch (err) {
+    wdSetError(err.message);
+  }
+}
+
+async function deleteWatcher(name) {
+  if (!confirm(`Delete watcher "${name}"? Its config entry is removed; watch history is kept.`)) return;
+  try {
+    const res = await fetch(`/api/watchers/${encodeURIComponent(name)}`, { method: 'DELETE' });
+    const r = await res.json();
+    if (!res.ok || r.ok === false) throw new Error(r.error || 'delete failed');
+    if (wdDialog.open) closeWatcherEditor();
+    toast(`Watcher ${name} deleted`, true);
+    await refreshWatchers();
+  } catch (err) {
+    toast(`Delete failed: ${err.message}`);
+  }
+}
+
+function closeWatcherEditor() {
+  wdDialog.close();
+  watchEditOpen = false;
+}
+
+wdEl('watch-new').addEventListener('click', () => wtDialog.showModal());
+wdEl('wt-close').addEventListener('click', () => wtDialog.close());
+for (const opt of wtDialog.querySelectorAll('.trig-opt[data-kind]')) {
+  opt.addEventListener('click', () => {
+    wtDialog.close();
+    openWatcherEditor(null, opt.dataset.kind);
+  });
+}
+
+wdEl('wd-close').addEventListener('click', closeWatcherEditor);
+wdEl('wd-cancel').addEventListener('click', closeWatcherEditor);
+wdDialog.addEventListener('close', () => { watchEditOpen = false; });
+wdEl('watcher-form').addEventListener('submit', (e) => { e.preventDefault(); saveWatcher(); });
+wdEl('wd-delete').addEventListener('click', () => wed.editing && deleteWatcher(wed.editing));
+wdEl('wd-add-rule').addEventListener('click', () => {
+  wed.rules.push({ name: '', about: '', actionType: 'skill', skill: '', prompt: '' });
+  wdRenderRules();
+  wdSync();
+});
+for (const b of wdEl('wd-chan-mode').children) {
+  b.addEventListener('click', () => { wdSetChanMode(b.dataset.mode); wdSync(); });
+}
+for (const b of wdEl('wd-sched-mode').children) {
+  b.addEventListener('click', () => { wdSetSchedMode(b.dataset.mode); wdSync(); });
+}
+wdEl('wd-chan-filter').addEventListener('input', wdRenderChannels);
+wdEl('wd-chan-refresh').addEventListener('click', wdLoadChannels);
+// cadence controls: preset beats + a numeric stepper for a custom value. A beat
+// sets the (hidden) input every other reader already uses, so nothing downstream
+// needs to know this control exists.
+const cadences = [];
+for (const box of document.querySelectorAll('.cadence')) {
+  const input = wdEl(box.dataset.input);
+  const stepper = box.querySelector('.stepper');
+  const beats = [...box.querySelectorAll('.beat')];
+  const step = parseInt(stepper.dataset.step, 10) || 1;
+  const min = parseInt(stepper.dataset.min, 10);
+  const max = parseInt(stepper.dataset.max, 10);
+
+  // reflect the input's value: light the matching beat, or fall back to Custom
+  const sync = () => {
+    const v = String(parseInt(input.value, 10) || '');
+    const match = beats.find((b) => b.dataset.value === v);
+    for (const b of beats) b.classList.toggle('on', b === (match || beats[beats.length - 1]));
+    stepper.hidden = !!match;
+  };
+  cadences.push(sync);
+
+  for (const b of beats) {
+    b.addEventListener('click', () => {
+      if (b.classList.contains('is-custom')) {
+        stepper.hidden = false;
+        for (const o of beats) o.classList.toggle('on', o === b);
+        input.focus();
+        input.select();
+      } else {
+        input.value = b.dataset.value;
+        sync();
+      }
+      wdSync();
+    });
+  }
+
+  const nudge = (dir) => {
+    const cur = parseInt(input.value, 10);
+    const from = Number.isFinite(cur) ? cur : min;
+    // land on clean multiples of the step when nudging off an odd value
+    const next = dir > 0 ? Math.floor(from / step) * step + step : Math.ceil(from / step) * step - step;
+    input.value = Math.min(max, Math.max(min, next));
+    wdSync();
+  };
+  stepper.querySelector('.step-dn').addEventListener('click', () => nudge(-1));
+  stepper.querySelector('.step-up').addEventListener('click', () => nudge(1));
+  input.addEventListener('keydown', (e) => {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return;
+    e.preventDefault();
+    nudge(e.key === 'ArrowUp' ? 1 : -1);
+  });
+  input.addEventListener('input', wdSync);
+}
+
+/** Light the beat that matches each cadence input (called after loading a watcher). */
+function wdSyncCadences() {
+  for (const sync of cadences) sync();
+}
+
+wdEl('wd-raw-toggle').addEventListener('click', () => {
+  wed.rawOpen = !wed.rawOpen;
+  wdEl('wd-raw').hidden = !wed.rawOpen;
+  wdEl('wd-raw-toggle').textContent = wed.rawOpen ? '▾ Raw JSON' : '▸ Raw JSON';
+  wdEl('wd-raw-toggle').setAttribute('aria-expanded', String(wed.rawOpen));
+  wdSync();
+});
+// every field feeds the live summary (and the raw view when it's open)
+for (const id of ['wd-name', 'wd-at', 'wd-cron', 'wd-prompt']) {
+  wdEl(id).addEventListener('input', wdSync);
+}
+wdEl('wd-sched-skill').addEventListener('change', wdSync);
+for (const id of ['wd-cwd', 'wd-cwd2']) {
+  wdEl(id).addEventListener('change', () => {
+    const other = wdEl(`${id}-other`);
+    other.hidden = wdEl(id).value !== WD_OTHER;
+    if (!other.hidden) other.focus();
+    wdSync();
+  });
+  wdEl(`${id}-other`).addEventListener('input', wdSync);
+}
 
 // ---------------------------------------------------------------- theme toggle
 
