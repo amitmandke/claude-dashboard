@@ -272,6 +272,7 @@ server/src/
 │   │   ├── config.js         watchers.json schema v2: load/validate (fail-closed), v1→v2 migration, bots + rules
 │   │   ├── state.js          per-channel cursor + tracked threads + seen dedupe (watchers-state.json)
 │   │   ├── slack.js          zero-dep Slack Web API client (read-only; injectable transport)
+│   │   ├── pace.js           the one queue every Slack call goes through: serial, paced, 429-adaptive
 │   │   ├── repos.js          owner/repo → local checkout, auto-discovered from git remotes
 │   │   ├── match.js          mention detection, noise filter, PR-ref extraction, thread render
 │   │   └── classify.js       headless `claude -p` intent matcher (reuses the aiTitles machinery)
@@ -518,6 +519,20 @@ so nothing already posted (however recent, answered or not) is ever staged, and 
 stays instant even across many auto-discovered channels. From then on each poll reads only
 `cursor→now` and advances the cursor to the newest message read, so a message is never re-read;
 after downtime the first read is just the missed window.
+
+**Rate limiting is a queue, not a retry.** Every Slack call — across every client, so across every
+bot and every watcher — is funnelled through one shared pacer (`pace.js`): calls run **one at a
+time** with a minimum gap, a 429 pauses the *whole* queue for Slack's `Retry-After` and **doubles**
+the gap (to a ceiling), and a clean streak halves it back toward the floor. The problem it solves is
+shape, not volume: a pass here is ~82 calls (11 channel histories + 71 thread re-scans) which spread
+over a 120s interval sits inside Slack's ~50/min tier, but fired as 11 parallel per-channel chains it
+arrives as a burst and earns an immediate 429. Because the queue is shared and serial, existing
+`Promise.all` fan-out keeps working unchanged — it queues instead of stampeding — and a new call site
+cannot defeat the limiter by forgetting to back off. Bounds are `CLAUDE_DASH_SLACK_MIN_GAP_MS`
+(default 1200) and `CLAUDE_DASH_SLACK_MAX_GAP_MS`. Paced passes can outlast the poll interval, so
+`tick` is **single-flight**: a tick that starts while the previous one is still running is skipped
+and logged, which costs nothing because the cursor resumes exactly where the running pass leaves off.
+The pacing policy is pure over an injected clock, so it is unit-tested with no timers or sockets.
 
 The Slack client (`slack.js`) is coverage-excluded like the terminal backends (pure network),
 while the pipeline + control logic (`runWatcherOnce`, pause/resume, config/state/match/classify/repos)

@@ -15,6 +15,7 @@ const match = require('../server/src/services/watchers/match');
 const repos = require('../server/src/services/watchers/repos');
 const wconfig = require('../server/src/services/watchers/config');
 const state = require('../server/src/services/watchers/state');
+const slack = require('../server/src/services/watchers/slack');
 const classify = require('../server/src/services/watchers/classify');
 const loop = require('../server/src/services/watchers');
 
@@ -1536,4 +1537,144 @@ test('repos dirs: lists every checkout, including both copies of a twice-cloned 
   ]);
   // preferDir still decides which clone resolves
   assert.equal(rm.resolve('acme/svc'), path.join(base, 'scratch', 'svc'));
+});
+
+// ---- pace.js: the one queue every Slack call goes through -------------------
+
+const pace = require('../server/src/services/watchers/pace');
+
+/** A fake clock: `sleep` advances it instead of waiting, so tests are instant. */
+function fakeClock() {
+  let t = 1000;
+  return {
+    now: () => t,
+    sleep: async (ms) => { t += ms; },
+    advance: (ms) => { t += ms; },
+    at: () => t,
+  };
+}
+
+test('pacer: serializes tasks and spaces their starts by the minimum gap', async () => {
+  const clock = fakeClock();
+  const p = pace.createPacer({ minGapMs: 1000, now: clock.now, sleep: clock.sleep });
+  const starts = [];
+  const task = (id) => () => { starts.push([id, clock.at()]); return Promise.resolve(id); };
+
+  const all = await Promise.all([p.run(task('a')), p.run(task('b')), p.run(task('c'))]);
+  assert.deepEqual(all, ['a', 'b', 'c'], 'results come back in submission order');
+  assert.deepEqual(starts.map((s) => s[0]), ['a', 'b', 'c'], 'one at a time, in order');
+  const [t0, t1, t2] = starts.map((s) => s[1]);
+  assert.ok(t1 - t0 >= 1000, `second call waited the gap (${t1 - t0}ms)`);
+  assert.ok(t2 - t1 >= 1000, `third call waited the gap (${t2 - t1}ms)`);
+});
+
+test('pacer: a rate-limited call pauses the queue, widens the gap, and retries', async () => {
+  const clock = fakeClock();
+  const logs = [];
+  const p = pace.createPacer({
+    minGapMs: 100, now: clock.now, sleep: clock.sleep, log: (l) => logs.push(l),
+  });
+  let attempts = 0;
+  const flaky = async () => {
+    attempts += 1;
+    if (attempts === 1) {
+      const e = new Error('ratelimited');
+      e.rateLimited = true;
+      e.retryAfterMs = 5000;
+      throw e;
+    }
+    return 'ok';
+  };
+  const started = clock.at();
+  assert.equal(await p.run(flaky), 'ok');
+  assert.equal(attempts, 2, 'retried once');
+  assert.ok(clock.at() - started >= 5000, "waited Slack's Retry-After");
+  assert.equal(p.stats().gapMs, 200, 'gap doubled under pressure');
+  assert.ok(logs.some((l) => l.includes('rate-limited')), 'backoff is logged');
+});
+
+test('pacer: gives up after maxAttempts and rethrows the rate-limit error', async () => {
+  const clock = fakeClock();
+  const p = pace.createPacer({ minGapMs: 10, maxAttempts: 3, now: clock.now, sleep: clock.sleep });
+  let attempts = 0;
+  await assert.rejects(
+    () => p.run(async () => {
+      attempts += 1;
+      const e = new Error('ratelimited');
+      e.rateLimited = true;
+      throw e;
+    }),
+    /ratelimited/
+  );
+  assert.equal(attempts, 3);
+});
+
+test('pacer: the gap never exceeds maxGapMs', async () => {
+  const clock = fakeClock();
+  const p = pace.createPacer({ minGapMs: 1000, maxGapMs: 2000, maxAttempts: 9, now: clock.now, sleep: clock.sleep });
+  let attempts = 0;
+  await p.run(async () => {
+    attempts += 1;
+    if (attempts < 5) {
+      const e = new Error('ratelimited');
+      e.rateLimited = true;
+      throw e;
+    }
+    return 'ok';
+  });
+  assert.equal(p.stats().gapMs, 2000, 'capped');
+});
+
+test('pacer: eases the gap back after a clean streak', async () => {
+  const clock = fakeClock();
+  const p = pace.createPacer({
+    minGapMs: 100, decayAfter: 2, now: clock.now, sleep: clock.sleep,
+  });
+  let first = true;
+  await p.run(async () => {
+    if (first) { first = false; const e = new Error('rl'); e.rateLimited = true; throw e; }
+    return 'ok';
+  });
+  assert.equal(p.stats().gapMs, 200, 'widened by the 429');
+  await p.run(async () => 'ok');
+  await p.run(async () => 'ok'); // hits decayAfter
+  assert.equal(p.stats().gapMs, 100, 'back to the floor after calm');
+});
+
+test('pacer: a non-rate-limit error propagates without touching the gap or the queue', async () => {
+  const clock = fakeClock();
+  const p = pace.createPacer({ minGapMs: 50, now: clock.now, sleep: clock.sleep });
+  await assert.rejects(() => p.run(async () => { throw new Error('not_in_channel'); }), /not_in_channel/);
+  assert.equal(p.stats().gapMs, 50, 'gap unchanged — this is not backpressure');
+  assert.equal(await p.run(async () => 'still works'), 'still works', 'queue survives a failure');
+});
+
+test('slack client: a 429 is retried through the pacer, not per call', async () => {
+  const clock = fakeClock();
+  const pacer = pace.createPacer({ minGapMs: 10, now: clock.now, sleep: clock.sleep });
+  let calls = 0;
+  const client = slack.createClient({
+    token: 'xoxb-test',
+    pacer,
+    request: async () => {
+      calls += 1;
+      if (calls === 1) return { status: 429, headers: { 'retry-after': '2' }, body: '{"ok":false,"error":"ratelimited"}' };
+      return { status: 200, headers: {}, body: '{"ok":true,"channels":[]}' };
+    },
+  });
+  const out = await client.userConversations({ types: 'public_channel' });
+  assert.deepEqual(out.channels, []);
+  assert.equal(calls, 2, 'the pacer retried the call');
+  assert.ok(pacer.stats().gapMs > 10, 'and widened the gap');
+});
+
+test('slack client: an ok:false body that is not rate limiting throws straight through', async () => {
+  const clock = fakeClock();
+  const pacer = pace.createPacer({ minGapMs: 1, now: clock.now, sleep: clock.sleep });
+  const client = slack.createClient({
+    token: 'xoxb-test',
+    pacer,
+    request: async () => ({ status: 200, headers: {}, body: '{"ok":false,"error":"missing_scope"}' }),
+  });
+  await assert.rejects(() => client.info({ channel: 'C1' }), /missing_scope/);
 });

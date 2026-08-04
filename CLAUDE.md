@@ -164,6 +164,17 @@ a function testable, export it (several are exported solely for tests, noted as 
   token counts per `message.id`, never per line — a per-line sum overcounts 3-5×.
 - Interaction features are iTerm2-only; observation works with any terminal.
 - First osascript call triggers a one-time macOS "control iTerm2" permission dialog.
+- **Every Slack call goes through the one shared queue in `pace.js` — never add a per-call retry.**
+  `slack.js` wraps each request in `pacer.run()`: serial, minimum gap (`CLAUDE_DASH_SLACK_MIN_GAP_MS`,
+  default 1200ms), and on a 429 it pauses the *whole* queue for `Retry-After`, doubles the gap to a
+  ceiling, retries, then eases back after a clean streak. The queue is process-wide precisely so
+  adding channels, bots, or call sites can't defeat it — a burst of parallel callers queues instead
+  of stampeding. Don't "optimize" by parallelizing around it or reintroducing the old one-shot 429
+  retry: the failure it fixes was ~82 calls fired as 11 parallel chains earning instant 429s (which
+  silently lost late thread replies). Because paced passes can exceed the poll interval, `tick` is
+  single-flight — an overlapping tick is skipped and logged, and the cursor makes that free.
+  `pace.js` is pure over an injected clock/sleep so the policy is unit-tested; `slack.js` stays
+  coverage-excluded.
 - **Slack watchers poll, never Socket Mode** — a persistent cursor (`watchers-state.json`)
   backfills messages missed while the machine was asleep; a real-time socket would drop them.
   Slack's `conversations.history` omits thread replies, so late `@you` mentions are caught by

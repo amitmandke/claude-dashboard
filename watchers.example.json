@@ -11,6 +11,8 @@
     }
   },
 
+  "//rate-limits": "Every Slack call is queued through one shared, self-throttling pacer (serial, min gap, backs off on 429). Tune with CLAUDE_DASH_SLACK_MIN_GAP_MS (default 1200) and CLAUDE_DASH_SLACK_MAX_GAP_MS. Cost per pass = channels + tracked threads; CLAUDE_DASH_WATCHER_THREAD_TTL_DAYS shortens the thread set.",
+
   "watchers": [
     {
       "//": "A Slack watcher: poll the bot's channels; a thread matching a rule stages a candidate.",

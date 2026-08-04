@@ -61,4 +61,10 @@ module.exports = {
   WATCHERS_THREAD_TTL_DAYS: parseInt(process.env.CLAUDE_DASH_WATCHER_THREAD_TTL_DAYS || '3', 10),
   WATCHERS_SEEN_TTL_DAYS: parseInt(process.env.CLAUDE_DASH_WATCHER_SEEN_TTL_DAYS || '7', 10),
   WATCHERS_MAX_THREADS: parseInt(process.env.CLAUDE_DASH_WATCHER_MAX_THREADS || '50', 10),
+  // Every Slack call goes through one shared, self-throttling queue (pace.js):
+  // the floor between calls, and the ceiling it backs off to under 429 pressure.
+  // ~80 calls a tick at 1.2s fits inside a 120s poll; the queue widens the gap
+  // itself when Slack pushes back, so these are bounds, not a schedule.
+  SLACK_MIN_GAP_MS: parseInt(process.env.CLAUDE_DASH_SLACK_MIN_GAP_MS || '1200', 10),
+  SLACK_MAX_GAP_MS: parseInt(process.env.CLAUDE_DASH_SLACK_MAX_GAP_MS || '60000', 10),
 };

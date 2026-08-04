@@ -383,7 +383,7 @@ let featureOn = false; // WATCHERS_ENABLED && a config file is present
 let deps = null; // built once at start(): slack client, repoMap, skillList, retention
 const runtime = new Map();
 // entry: { name, channels, everySeconds, trigger, state, lastPollAt, staged,
-//          lastError, watcher, timer }
+//          lastError, watcher, timer, ticking }
 //   state ∈ 'running' | 'paused' | 'error' | 'disabled'
 //   watcher = normalized cfg | null (null = config error, needs a file edit)
 //   timer   = interval handle | null
@@ -496,6 +496,15 @@ function startTimer(e) {
 
 async function tick(entry) {
   if (!deps || !entry.watcher) return;
+  // Single-flight: a tick now paces its Slack calls (see pace.js), so a wide scan
+  // can outlast the poll interval. Overlapping ticks would queue behind each
+  // other and compound; skipping is free because the cursor resumes exactly
+  // where the running tick leaves off. Logged, never silent.
+  if (entry.ticking) {
+    log(`ACTION watcher name=${entry.name} note=tick-skipped (previous pass still running)`);
+    return;
+  }
+  entry.ticking = true;
   try {
     // poll with this watcher's own bot token when it has one (fake deps in tests
     // supply only `client`)
@@ -517,6 +526,8 @@ async function tick(entry) {
     log(`ERROR watcher name=${entry.name} tick: ${e.message}`);
     entry.lastError = e.message;
     if (entry.timer) entry.state = 'error';
+  } finally {
+    entry.ticking = false;
   }
 }
 
