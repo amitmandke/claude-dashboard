@@ -167,7 +167,8 @@ async function scanChannel({ name, channel, qualifies, label, client, nowMs, ret
     const threadId = match.threadIdOf(msg);
     state.trackThread(name, channel, threadId, nowMs);
     if (!match.isNoise(msg) && qualifies(msg)) {
-      qualifiers.push({ channel, threadId, why: `${label} in message` });
+      // carry the matching message's ts: dedupe is per MENTION, not per thread
+      qualifiers.push({ channel, threadId, msgTs: msg.ts, why: `${label} in message` });
     }
   }
   const newestTop = newestTs(messages);
@@ -187,8 +188,13 @@ async function scanChannel({ name, channel, qualifies, label, client, nowMs, ret
         state.trackThread(name, channel, threadId, nowMs);
         const newest = newestTs(fresh);
         if (newest) state.setReplyCursor(name, channel, threadId, newest);
-        if (fresh.some((m) => !match.isNoise(m) && qualifies(m))) {
-          qualifiers.push({ channel, threadId, why: `${label} in reply` });
+        // the NEWEST qualifying reply, not the first: dedupe keys off this ts, and
+        // an older already-decided mention must not mask a fresh ping below it
+        const hit = fresh
+          .filter((m) => !match.isNoise(m) && qualifies(m))
+          .reduce((best, m) => (state.tsGreater(m.ts, best && best.ts) ? m : best), null);
+        if (hit) {
+          qualifiers.push({ channel, threadId, msgTs: hit.ts, why: `${label} in reply` });
         }
       }
     } catch (e) {
@@ -261,14 +267,19 @@ async function runWatcherOnce(watcher, deps) {
     scannedThreads += s.scannedThreads;
     newMessages += s.newMessages;
     for (const q of s.qualifiers) {
+      // one candidate per thread per pass, keyed on its LATEST mention (an older
+      // one may already be decided, which would otherwise hide the new ask)
       const k = state.seenKey(q.channel, q.threadId);
-      if (!toClassify.has(k)) toClassify.set(k, q);
+      const prev = toClassify.get(k);
+      if (!prev || state.tsGreater(q.msgTs, prev.msgTs)) toClassify.set(k, q);
     }
   }
 
   let staged = 0;
-  for (const { channel, threadId, why } of toClassify.values()) {
-    if (state.isSeen(name, channel, threadId)) continue;
+  for (const { channel, threadId, msgTs, why } of toClassify.values()) {
+    // decided once per mention: the same message never re-stages, but a fresh
+    // mention in a thread handled earlier does (a follow-up ping is a new ask)
+    if (state.isSeen(name, channel, threadId, msgTs)) continue;
     try {
       const thread = await fetchReplies(client, channel, threadId, null);
       const threadText = match.renderThread(thread);
@@ -294,7 +305,7 @@ async function runWatcherOnce(watcher, deps) {
         permalink,
       });
 
-      state.markSeen(name, channel, threadId, nowMs); // decided once, either way
+      state.markSeen(name, channel, threadId, msgTs, nowMs); // decided once, either way
 
       // Decide actionability + skill. Intent mode: the model only named an intent
       // and the skill comes from the config map — repo/prompt/reason are built

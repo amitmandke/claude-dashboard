@@ -180,6 +180,12 @@ a function testable, export it (several are exported solely for tests, noted as 
   Slack's `conversations.history` omits thread replies, so late `@you` mentions are caught by
   re-scanning tracked threads' replies (bounded by retention + a thread cap). Don't "upgrade"
   to events without keeping the cursor backfill.
+- **Dedupe is per MENTION (`channel:thread:message_ts`), not per thread** — and both collapse
+  points must take the **newest** qualifying message (`state.tsGreater` reduce over fresh replies,
+  and newest-wins in the per-pass `toClassify` map). Keyed per thread, a follow-up ping in an
+  already-decided thread was silently dropped for the 7-day `seen` window — the re-ping pattern of a
+  PR-review thread. Taking the *first* qualifying reply instead of the newest reintroduces the bug in
+  a subtler form: the old, already-decided mention masks the new ask (a test covers this).
 - **Watcher state is keyed per channel, and all configured channels are scanned.**
   `state.js` is `watcher → channels[channelId] → { cursor, name, threads }` (+ watcher-level
   `seen`, already `channel:thread` keyed); each channel has its own cursor so they backfill

@@ -171,14 +171,22 @@ function setReplyCursor(name, channelId, threadTs, ts) {
   if (t && ts && tsGreater(ts, t.replyCursor)) t.replyCursor = ts;
 }
 
-const seenKey = (channel, threadTs) => `${channel}:${threadTs}`;
+/**
+ * Dedupe key. With `msgTs` it identifies ONE MENTION (`channel:thread:ts`) — the
+ * persistent "already decided" marker, so a *new* mention in a thread that was
+ * decided earlier still counts. Without it (`channel:thread`) it identifies the
+ * thread, which is what collapses several mentions found in a single pass into
+ * one candidate.
+ */
+const seenKey = (channel, threadTs, msgTs) =>
+  `${channel}:${threadTs}` + (msgTs ? `:${msgTs}` : '');
 
-function isSeen(name, channel, threadTs) {
-  return !!forWatcher(name).seen[seenKey(channel, threadTs)];
+function isSeen(name, channel, threadTs, msgTs) {
+  return !!forWatcher(name).seen[seenKey(channel, threadTs, msgTs)];
 }
 
-function markSeen(name, channel, threadTs, nowMs) {
-  forWatcher(name).seen[seenKey(channel, threadTs)] = nowMs;
+function markSeen(name, channel, threadTs, msgTs, nowMs) {
+  forWatcher(name).seen[seenKey(channel, threadTs, msgTs)] = nowMs;
 }
 
 /**
