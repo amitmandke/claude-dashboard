@@ -592,12 +592,16 @@ test('advanceCursor: only moves forward (per channel)', () => {
   assert.equal(state.cursorOf('w', 'C1'), '9.0');
 });
 
-test('seen: mark + isSeen keyed by channel:thread', () => {
+test('seen: mark + isSeen keyed by channel:thread:mention', () => {
   freshState();
+  assert.equal(state.isSeen('w', 'C1', 't1', 'm1'), false);
+  state.markSeen('w', 'C1', 't1', 'm1', 1000);
+  assert.equal(state.isSeen('w', 'C1', 't1', 'm1'), true);
+  assert.equal(state.isSeen('w', 'C1', 't2', 'm1'), false);
+  // the point of the finer key: another mention in the SAME thread is not "seen"
+  assert.equal(state.isSeen('w', 'C1', 't1', 'm2'), false, 'a new mention in a decided thread still counts');
+  // and the thread-level key (used to collapse one pass) is separate
   assert.equal(state.isSeen('w', 'C1', 't1'), false);
-  state.markSeen('w', 'C1', 't1', 1000);
-  assert.equal(state.isSeen('w', 'C1', 't1'), true);
-  assert.equal(state.isSeen('w', 'C1', 't2'), false);
 });
 
 test('prune: drops aged threads/seen and caps thread count', () => {
@@ -605,8 +609,8 @@ test('prune: drops aged threads/seen and caps thread count', () => {
   const now = 10 * 86400000;
   state.trackThread('w', 'C1', 'old', now - 5 * 86400000); // 5d old
   state.trackThread('w', 'C1', 'new', now);
-  state.markSeen('w', 'C1', 'oldseen', now - 8 * 86400000); // 8d old
-  state.markSeen('w', 'C1', 'newseen', now);
+  state.markSeen('w', 'C1', 'oldseen', 'm', now - 8 * 86400000); // 8d old
+  state.markSeen('w', 'C1', 'newseen', 'm', now);
   const r = state.prune('w', {
     nowMs: now,
     threadTtlMs: 3 * 86400000,
@@ -615,7 +619,7 @@ test('prune: drops aged threads/seen and caps thread count', () => {
   });
   const c = state.forChannel('w', 'C1');
   assert.ok(!c.threads.old && c.threads.new, 'aged thread pruned, fresh kept');
-  assert.ok(!state.forWatcher('w').seen['C1:oldseen'] && state.forWatcher('w').seen['C1:newseen'], 'aged seen pruned');
+  assert.ok(!state.forWatcher('w').seen['C1:oldseen:m'] && state.forWatcher('w').seen['C1:newseen:m'], 'aged seen pruned');
   assert.equal(r.threadsDropped, 1);
   assert.equal(r.seenDropped, 1);
 });
@@ -634,7 +638,7 @@ test('setCursor: moves the cursor and clears that channel’s threads + seen onl
   freshState();
   state.advanceCursor('w', 'C1', '5.0');
   state.trackThread('w', 'C1', 't1', 1000);
-  state.markSeen('w', 'C1', 't1', 1000);
+  state.markSeen('w', 'C1', 't1', 'm1', 1000);
   state.advanceCursor('w', 'C2', '9.0'); // a sibling channel must be untouched
   state.trackThread('w', 'C2', 't2', 1000);
 
@@ -855,7 +859,7 @@ test('runWatcherOnce: not-actionable thread is marked seen but not staged', asyn
   });
   assert.equal(r.staged, 0);
   assert.equal(candidates.added.length, 0);
-  assert.equal(state.isSeen('w', 'C1', '100.1'), true); // won't be reclassified next tick
+  assert.equal(state.isSeen('w', 'C1', '100.1', '100.1'), true); // that mention won't be reclassified
 });
 
 test('runWatcherOnce: no mention → nothing staged but cursor advances', async () => {
@@ -936,7 +940,7 @@ test('runWatcherOnce: intent mode — no matching intent is not staged', async (
   });
   assert.equal(r.staged, 0);
   assert.equal(candidates.added.length, 0);
-  assert.equal(state.isSeen('w', 'C1', '100.1'), true);
+  assert.equal(state.isSeen('w', 'C1', '100.1', '100.1'), true);
 });
 
 test('runWatcherOnce: falls back to watcher.defaultCwd when no repo resolves', async () => {
@@ -1677,4 +1681,70 @@ test('slack client: an ok:false body that is not rate limiting throws straight t
     request: async () => ({ status: 200, headers: {}, body: '{"ok":false,"error":"missing_scope"}' }),
   });
   await assert.rejects(() => client.info({ channel: 'C1' }), /missing_scope/);
+});
+
+test('runWatcherOnce: a NEW mention in an already-decided thread stages again', async () => {
+  freshArmed();
+  const candidates = fakeCandidates();
+  // pass 1: the thread is decided (classifier declines) and marked seen
+  const first = stubClient({ history: [{ ts: '100.1', text: 'hey <@U1> thoughts?' }] });
+  await loop.runWatcherOnce(WATCHER, {
+    client: first, candidates, classify: async () => ({ actionable: false }),
+    resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
+  });
+  assert.equal(candidates.added.length, 0);
+  assert.equal(state.isSeen('w', 'C1', '100.1', '100.1'), true);
+
+  // pass 2: a follow-up ping arrives as a reply in that same thread. Keyed per
+  // thread this was silently dropped for the whole seen TTL; keyed per mention it
+  // is a fresh ask and stages.
+  const second = stubClient({
+    history: [],
+    repliesByTs: {
+      '100.1': [
+        { ts: '100.1', user: 'U2', text: 'hey <@U1> thoughts?' },
+        { ts: '200.5', user: 'U2', text: 'bumping this <@U1> — please take a look' },
+      ],
+    },
+  });
+  const r2 = await loop.runWatcherOnce(WATCHER, {
+    client: second, candidates, classify: async () => ({ actionable: true, skill: 'debug', reason: 'asked again' }),
+    resolveRepo: () => '/x', retention: RETENTION, nowMs: 2000,
+  });
+  assert.equal(r2.staged, 1, 'the follow-up ping produced a candidate');
+  assert.equal(state.isSeen('w', 'C1', '100.1', '200.5'), true, 'the new mention is now decided too');
+  assert.equal(state.isSeen('w', 'C1', '100.1', '100.1'), true, 'and the original stays decided');
+});
+
+test('runWatcherOnce: the same mention is never staged twice', async () => {
+  freshArmed();
+  const candidates = fakeCandidates();
+  const msg = { ts: '100.1', text: 'hey <@U1> please review' };
+  const deps = () => ({
+    client: stubClient({ history: [msg], repliesByTs: { '100.1': [{ ...msg, user: 'U2' }] } }),
+    candidates,
+    classify: async () => ({ actionable: true, skill: 'debug', reason: 'r' }),
+    resolveRepo: () => '/x',
+    retention: RETENTION,
+    nowMs: 1000,
+  });
+  assert.equal((await loop.runWatcherOnce(WATCHER, deps())).staged, 1);
+  assert.equal((await loop.runWatcherOnce(WATCHER, deps())).staged, 0, 'second pass re-reads it but does not re-stage');
+  assert.equal(candidates.added.length, 1);
+});
+
+test('runWatcherOnce: two mentions of one thread in a single pass stage once', async () => {
+  freshArmed();
+  const candidates = fakeCandidates();
+  // both the parent and a reply mention you in the same pass — one ask, one card
+  const client = stubClient({
+    history: [{ ts: '100.1', text: 'hey <@U1>' }],
+    repliesByTs: { '100.1': [{ ts: '100.9', user: 'U2', text: 'still there <@U1>?' }] },
+  });
+  const r = await loop.runWatcherOnce(WATCHER, {
+    client, candidates, classify: async () => ({ actionable: true, skill: 'debug', reason: 'r' }),
+    resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
+  });
+  assert.equal(r.staged, 1);
+  assert.equal(candidates.added.length, 1, 'collapsed per thread within the pass');
 });

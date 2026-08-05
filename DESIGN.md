@@ -460,9 +460,13 @@ only duplicate that work and go stale). The classify call itself stays tool-less
 it reasons only over the thread text it's handed, never calling `gh` or MCP. `launchPromptFrom`
 (a link back + PR refs + thread text) remains the deterministic fallback when the model returns no
 usable prompt. If the classifier is unavailable the thread is still staged as
-*unclassified* (never dropped, deterministic prompt) for you to fill in. Dedupe is keyed by `channel:thread_ts`, so
-socket/poll overlap or a re-scan never double-stages, and a decided thread (matched or not) is
-marked `seen` so it isn't re-classified.
+*unclassified* (never dropped, deterministic prompt) for you to fill in. Dedupe is keyed by **`channel:thread_ts:message_ts`** — per *mention*, not per thread — so a
+re-scan or poll overlap never double-stages the same message, while a **follow-up ping in a thread
+that was already decided is still a fresh ask** and does stage (keyed per thread it was silently
+dropped for the whole `seen` window, which is exactly the re-ping pattern of a review thread). Both
+collapse points take the **newest** qualifying message: the latest reply in a re-scan, and the
+latest mention when several land in one pass — an older, already-decided mention must not mask a new
+one. One candidate per thread per pass either way.
 
 Each bot's token is resolved from a reference in config (`slack.bots.<ref>.token`), never stored
 inline in the repo — the normalized bot exposes the *reference* for display and the resolved
