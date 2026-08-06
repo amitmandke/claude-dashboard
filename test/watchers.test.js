@@ -166,7 +166,53 @@ test('normalizeWatcher: dedupes, floors poll interval, accepts mentionUsers alia
 // A v1 `mention` trigger normalizes to the v2 `slack` shape (`users` stays as an
 // alias of `mentions` for the shipped runner).
 const slackTrigger = (mentions, extra = {}) => ({
-  type: 'slack', botRef: 'default', mentions, users: mentions, channels: [], discover: false, ...extra,
+  type: 'slack', botRef: 'default', mentions, users: mentions, channels: [], discover: false,
+  excludeChannels: [], ...extra,
+});
+
+test('normalizeTrigger: excludeChannels is deduped, defaults empty, survives auto', () => {
+  assert.deepEqual(
+    wconfig.normalizeTrigger({
+      trigger: { type: 'slack', mentions: ['U1'], channels: 'auto', excludeChannels: ['C2', 'C2', 'C3'] },
+    }),
+    slackTrigger(['U1'], { discover: true, excludeChannels: ['C2', 'C3'] })
+  );
+  // the denylist is the whole point of auto, so it must not require an explicit list
+  assert.deepEqual(
+    wconfig.normalizeTrigger({ trigger: { type: 'slack', mentions: ['U1'], channels: 'auto' } }).excludeChannels,
+    []
+  );
+});
+
+test('normalizeWatcher: an explicit list fully excluded fails closed', () => {
+  const w = wconfig.normalizeWatcher(
+    {
+      name: 'w', enabled: true,
+      trigger: { type: 'slack', mentions: ['U1'], channels: ['C1', 'C2'], excludeChannels: ['C1', 'C2'] },
+    },
+    0
+  );
+  assert.equal(w.ok, false);
+  assert.match(w.reason, /every channel is excluded/);
+  // excluding only SOME of them is fine
+  const ok = wconfig.normalizeWatcher(
+    {
+      name: 'w', enabled: true,
+      trigger: { type: 'slack', mentions: ['U1'], channels: ['C1', 'C2'], excludeChannels: ['C2'] },
+    },
+    0
+  );
+  assert.equal(ok.ok, true);
+  assert.deepEqual(ok.excludeChannels, ['C2']);
+  // and `auto` + a denylist is never fail-closed: discovery may still find others
+  const auto = wconfig.normalizeWatcher(
+    {
+      name: 'w', enabled: true,
+      trigger: { type: 'slack', mentions: ['U1'], channels: 'auto', excludeChannels: ['C1'] },
+    },
+    0
+  );
+  assert.equal(auto.ok, true);
 });
 
 test('normalizeTrigger: explicit mention users, legacy fallback, unsupported type', () => {
@@ -1731,6 +1777,81 @@ test('runWatcherOnce: the same mention is never staged twice', async () => {
   assert.equal((await loop.runWatcherOnce(WATCHER, deps())).staged, 1);
   assert.equal((await loop.runWatcherOnce(WATCHER, deps())).staged, 0, 'second pass re-reads it but does not re-stage');
   assert.equal(candidates.added.length, 1);
+});
+
+test('runWatcherOnce: an excluded channel is never scanned', async () => {
+  freshArmed();
+  const candidates = fakeCandidates();
+  let historyCalls = 0;
+  const client = {
+    async history() { historyCalls++; return { messages: [{ ts: '100.1', text: 'hey <@U1>' }], has_more: false }; },
+    async replies() { return { messages: [], has_more: false }; },
+    async permalink() { return { permalink: 'https://slack/x' }; },
+    async info({ channel }) { return { channel: { id: channel, name: `chan-${channel}` } }; },
+  };
+  const w = { ...WATCHER, channels: ['C1', 'C2'], excludeChannels: ['C2'] };
+  const r = await loop.runWatcherOnce(w, {
+    client, candidates, classify: alwaysActionable,
+    resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
+  });
+  assert.equal(historyCalls, 1, 'only the non-excluded channel was fetched');
+  assert.equal(r.staged, 1);
+});
+
+test('runWatcherOnce: excluding a channel reclaims its tracked threads', async () => {
+  freshArmed();
+  // C2 has history from before it was excluded — the cost we want back
+  state.advanceCursor('w', 'C2', '1');
+  state.trackThread('w', 'C2', 't1', 1000);
+  state.trackThread('w', 'C2', 't2', 1000);
+  state.markSeen('w', 'C2', 't1', 'm1', 1000);
+  assert.equal(Object.keys(state.forChannel('w', 'C2').threads).length, 2);
+
+  const w = { ...WATCHER, channels: ['C1', 'C2'], excludeChannels: ['C2'] };
+  await loop.runWatcherOnce(w, {
+    client: stubClient({ history: [] }), candidates: fakeCandidates(),
+    classify: alwaysActionable, resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
+  });
+  assert.equal(Object.keys(state.forChannel('w', 'C2').threads).length, 0, 'threads dropped');
+  assert.equal(state.isSeen('w', 'C2', 't1', 'm1'), false, 'seen-markers dropped too');
+  // cursor is deliberately kept, so un-excluding backfills instead of skipping
+  assert.equal(state.cursorOf('w', 'C2'), '1');
+});
+
+test('runWatcherOnce: all channels excluded stages nothing and calls Slack not at all', async () => {
+  freshArmed();
+  let calls = 0;
+  const client = {
+    async history() { calls++; return { messages: [], has_more: false }; },
+    async replies() { calls++; return { messages: [], has_more: false }; },
+    async permalink() { return { permalink: 'x' }; },
+    async info({ channel }) { return { channel: { id: channel, name: channel } }; },
+  };
+  const w = { ...WATCHER, channels: ['C1'], excludeChannels: ['C1'] };
+  const r = await loop.runWatcherOnce(w, {
+    client, candidates: fakeCandidates(), classify: alwaysActionable,
+    resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
+  });
+  assert.equal(calls, 0);
+  assert.deepEqual(r, { staged: 0, scannedThreads: 0, newMessages: 0 });
+});
+
+test('runWatcherOnce: exclusion and pause are independent skips', async () => {
+  freshArmed();
+  const seen = [];
+  const client = {
+    async history({ channel }) { seen.push(channel); return { messages: [], has_more: false }; },
+    async replies() { return { messages: [], has_more: false }; },
+    async permalink() { return { permalink: 'x' }; },
+    async info({ channel }) { return { channel: { id: channel, name: channel } }; },
+  };
+  state.setPaused('w', 'C2', true);
+  const w = { ...WATCHER, channels: ['C1', 'C2', 'C3'], excludeChannels: ['C3'] };
+  await loop.runWatcherOnce(w, {
+    client, candidates: fakeCandidates(), classify: alwaysActionable,
+    resolveRepo: () => '/x', retention: RETENTION, nowMs: 1000,
+  });
+  assert.deepEqual(seen, ['C1'], 'C2 paused, C3 excluded, only C1 scanned');
 });
 
 test('runWatcherOnce: two mentions of one thread in a single pass stage once', async () => {

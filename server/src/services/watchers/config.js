@@ -292,8 +292,14 @@ function normalizeTrigger(raw) {
   // those. An empty array stays fail-closed (watches nothing).
   const discover = typeof t.channels === 'string' && t.channels.trim().toLowerCase() === 'auto';
   const channels = discover ? [] : [...new Set(asArray(t.channels))];
+  // `excludeChannels` is the denylist that makes `auto` usable: keep discovering
+  // every channel the bot joins, but never scan these. Stored as ids (a rename
+  // must not silently re-enable one) and deliberately NOT reconciled against the
+  // discovered list — an id for a channel the bot has left stays excluded, so
+  // re-inviting the bot doesn't quietly resume a channel that was muted on purpose.
+  const excludeChannels = [...new Set(asArray(t.excludeChannels))];
   const botRef = typeof t.botRef === 'string' && t.botRef.trim() ? t.botRef.trim() : DEFAULT_BOT_REF;
-  return { type, botRef, mentions, users: mentions, channels, discover };
+  return { type, botRef, mentions, users: mentions, channels, discover, excludeChannels };
 }
 
 /**
@@ -395,6 +401,14 @@ function normalizeWatcher(raw, i) {
   if (!trigger.discover && trigger.channels.length === 0) {
     return { ok: false, name, type: trigger.type, reason: 'no channels (fail-closed)' };
   }
+  // an explicit list fully covered by the denylist watches nothing — fail closed
+  // rather than run a watcher that can never produce a candidate.
+  if (
+    !trigger.discover &&
+    trigger.channels.every((c) => trigger.excludeChannels.includes(c))
+  ) {
+    return { ok: false, name, type: trigger.type, reason: 'every channel is excluded (fail-closed)' };
+  }
   const everySeconds = Math.max(
     MIN_POLL_SECONDS,
     parseInt((w.poll && w.poll.everySeconds) || 120, 10) || 120
@@ -404,6 +418,7 @@ function normalizeWatcher(raw, i) {
     botRef: trigger.botRef,
     channels: trigger.channels,
     discover: trigger.discover,
+    excludeChannels: trigger.excludeChannels,
     mentionUsers: trigger.mentions, // convenience alias for the mention pipeline
     everySeconds,
   };

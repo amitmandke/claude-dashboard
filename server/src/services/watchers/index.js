@@ -249,9 +249,30 @@ async function runWatcherOnce(watcher, deps) {
     return { staged: 0, scannedThreads: 0, newMessages: 0 };
   }
 
-  // a paused channel is skipped entirely — its cursor/since stay put, so resuming
-  // backfills from where it left off.
-  const active = channels.filter((channel) => !state.isPaused(name, channel));
+  // Two independent ways a channel sits out, kept distinct on purpose:
+  //   `excluded` is durable policy from config (survives a state reset, is what
+  //     the editor writes) and reclaims the channel's tracked threads;
+  //   `paused` is a temporary operational toggle in state that keeps them.
+  // Both leave cursor/since alone, so either one resuming backfills from where it
+  // left off rather than skipping the gap.
+  const excluded = new Set(watcher.excludeChannels || []);
+  for (const channel of channels) {
+    if (!excluded.has(channel)) continue;
+    // Reclaimed lazily rather than at save time, so this also covers a
+    // hand-edited config and a channel excluded while the watcher was stopped.
+    const dropped = state.clearChannelTracking(name, channel);
+    if (dropped) {
+      log(`ACTION watcher name=${name} channel=${channel} note=excluded-cleared threads=${dropped}`);
+    }
+  }
+  const active = channels.filter(
+    (channel) => !excluded.has(channel) && !state.isPaused(name, channel)
+  );
+  if (active.length === 0) {
+    log(`ACTION watcher name=${name} note=no-active-channel excluded=${excluded.size}`);
+    state.save(); // the exclusion clears above are worth persisting
+    return { staged: 0, scannedThreads: 0, newMessages: 0 };
+  }
   const scans = await Promise.all(
     active.map((channel) =>
       scanChannel({ name, channel, qualifies, label, client, nowMs, retention })
@@ -466,7 +487,7 @@ function noteConfigMeta(cfg) {
 function entryFromDisabled(name, reason, prev) {
   const paused = reason === 'disabled';
   return {
-    name, channels: [], everySeconds: null, discover: false, trigger: null,
+    name, channels: [], everySeconds: null, discover: false, excludeChannels: [], trigger: null,
     state: paused ? 'paused' : 'disabled',
     lastPollAt: prev ? prev.lastPollAt : null,
     staged: prev ? prev.staged : 0,
@@ -480,6 +501,7 @@ function entryFromWatcher(w, state) {
     name: w.name,
     channels: w.channels || [],
     discover: !!w.discover,
+    excludeChannels: w.excludeChannels || [],
     everySeconds: w.everySeconds,
     trigger: w.trigger ? w.trigger.type : null,
     state,
@@ -692,6 +714,7 @@ function reconcile(name) {
   const e = existing
     ? Object.assign(existing, {
       watcher: w, channels: w.channels, discover: !!w.discover,
+      excludeChannels: w.excludeChannels || [],
       everySeconds: w.everySeconds, trigger: w.trigger ? w.trigger.type : null, lastError: null,
     })
     : entryFromWatcher(w, 'running');
@@ -867,7 +890,9 @@ function getStatus() {
       ...(configMeta.get(e.name) || {}),
       discover: !!e.discover,
       // explicit config channels plus any actually watched (discovered) ones
-      channels: [...new Set([...(e.channels || []), ...state.channelsOf(e.name)])].map((id) => {
+      channels: [
+        ...new Set([...(e.channels || []), ...state.channelsOf(e.name), ...(e.excludeChannels || [])]),
+      ].map((id) => {
         const since = state.sinceOf(e.name, id);
         return {
           id,
@@ -876,6 +901,9 @@ function getStatus() {
           // means it will baseline (start from now) on its first poll.
           watchingSince: since ? new Date(parseFloat(since) * 1000).toISOString() : null,
           paused: state.isPaused(e.name, id),
+          // durable config denylist — distinct from `paused` so the row can say
+          // WHY it isn't scanning; the two are otherwise indistinguishable.
+          excluded: (e.excludeChannels || []).includes(id),
         };
       }),
       everySeconds: e.everySeconds,

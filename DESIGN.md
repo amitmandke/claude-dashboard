@@ -308,10 +308,10 @@ server/src/
 | `/api/candidates/:id/launch` | POST | spawn it (same path as `/sessions/new`), mark `launched`; 409 at the `maxConcurrent` cap |
 | `/api/candidates/:id/dismiss` · `/undismiss` | POST | mark `dismissed` / restore to `pending` |
 | `/api/candidates/:id` | DELETE | remove the item from the list now (the ✕ Clear action) |
-| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error, and per-channel `{ id, name, watchingSince, paused }` |
+| `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error, and per-channel `{ id, name, watchingSince, paused, excluded }` — `paused` and `excluded` are reported separately so a row can say *why* it isn't scanning |
 | `/api/watchers/:name/{pause,resume,run}` | POST | pause a watcher (persists `enabled:false`), resume it (persists `enabled:true`), or run one poll now |
 | `/api/watchers/:name/cursor` | POST | move a channel's "watch from" point: `{ channel, at }` (`at` = `"now"` or a date); clears that channel's tracked threads/seen |
-| `/api/watchers/:name/channel/{pause,resume}` | POST | pause / resume a single channel (`{ channel }`); a paused channel is skipped every poll, state kept |
+| `/api/watchers/:name/channel/{pause,resume}` | POST | pause / resume a single channel (`{ channel }`); a paused channel is skipped every poll, state kept — the *temporary* counterpart to the durable `excludeChannels` denylist |
 | `/api/watchers/{stop-all,start-all}` | POST | pause / resume every watcher at once |
 | `/api/watchers/config` | GET | the editable config: each watcher in v2 raw shape (what a save patches, so a Raw-JSON view round-trips) plus `{ ref, label, tokenRef, resolves }` per bot — references only, never a resolved token |
 | `/api/watchers/bots` | GET | bots with their live identity from `auth.test` (`{ user, team, botId }`); an unresolvable reference or a rejected token comes back as that bot's `error`, not a failed request |
@@ -389,6 +389,16 @@ declares a **bots map** plus a list of watchers:
     paginated) and scan them all: invite the bot to a channel and it just appears, no config
     edit. Discovery prefers public + private but degrades to public-only when the token lacks
     `groups:read` (private channels also need `groups:history` to read anyway).
+    **`excludeChannels`** is the denylist that makes `"auto"` practical: keep discovering
+    everything the bot joins, but never scan these. It is what makes a busy alert channel free
+    rather than expensive — a channel nobody scans should not keep costing calls — so excluding
+    one also **drops its tracked threads and seen-markers**, reclaiming the tracked-thread
+    budget, while leaving `cursor`/`since` intact so un-excluding backfills the gap instead of
+    skipping it. Ids are stored, not names (a rename must not silently re-enable a channel), and
+    the list is never reconciled against discovery: an id for a channel the bot has left stays
+    excluded, so re-inviting the bot cannot quietly resume something muted on purpose. An
+    explicit `channels` list fully covered by the denylist is refused at load (fail-closed);
+    `"auto"` plus a denylist never is, since discovery may still find others.
   - `{ type:"schedule", everyMinutes | at:"HH:MM" | cron }` — `at` alone means daily.
 - `rules` — the **when → then map**: `[{ name, about, action }]`, where `action` is
   `{ type:"skill", skill }` or `{ type:"prompt", prompt }`. This is the point of control: the
