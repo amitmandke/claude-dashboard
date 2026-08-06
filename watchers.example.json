@@ -27,6 +27,8 @@
         "mentions": ["U0456EFGH"]
       },
       "//trigger-channels-auto": "Alternatively: \"channels\": \"auto\"",
+      "//trigger-excludeChannels": "Optional denylist, and what makes \"auto\" practical: keep discovering every channel the bot joins, but never scan these — use it to mute a busy alert channel that never actually mentions you. Ids, not names. Excluding a channel also drops its tracked threads (reclaiming the tracked-thread budget) but keeps its cursor, so removing it from this list backfills the gap rather than skipping it. Never reconciled against discovery: an id for a channel the bot has left stays excluded, so re-inviting the bot cannot quietly resume it. Unlike the temporary per-channel pause in the UI, this survives a state reset.",
+      "//trigger-excludeChannels-example": "\"excludeChannels\": [\"C0789NOIS\"]",
 
       "//rules": "Your when -> then map. The classifier matches a qualifying thread to ONE named rule (or none); the action comes from this map, not from the model. 'about' is what the rule matches, in plain words. action.type is 'skill' (runs that skill) or 'prompt' (schema-ready; the runner treats it as no skill for now). Empty list = the model picks a skill freely (looser).",
       "rules": [

@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  # manual re-run, for when GitHub doesn't dispatch a PR event and the required
+  # check never appears (branch protection then blocks a merge with nothing to retry)
+  workflow_dispatch:
 
 permissions:
   contents: write # the badge job force-pushes a one-file 'badges' branch

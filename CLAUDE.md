@@ -288,6 +288,19 @@ a function testable, export it (several are exported solely for tests, noted as 
   stay put, so resuming backfills from where they left off. This is why per-channel status now
   earns a place on the row (active vs paused), where per-channel *liveness* alone would be
   redundant (all channels poll together in one tick).
+- **`excludeChannels` and `paused` are two different things — keep them that way.** `paused` is a
+  temporary operational toggle living in `watchers-state.json`; `trigger.excludeChannels` is durable
+  policy in `watchers.json` (survives a state reset, is what an editor save writes). `runWatcherOnce`
+  skips `excluded ∪ paused`, and `getStatus` reports both flags per channel so a row can say *why*
+  it isn't scanning — collapse them into one and that answer is gone. Only exclusion calls
+  `state.clearChannelTracking` (threads + that channel's seen-markers): a channel nobody scans must
+  not keep occupying the tracked-thread budget, which is the entire point when a busy alert channel
+  is the thing being muted. Both leave `cursor`/`since` alone, so either one resuming backfills the
+  gap. The clear runs **lazily in the tick**, not at save time, so it also covers a hand-edited
+  config and a channel excluded while the watcher was stopped. Exclusions are ids (a rename must not
+  re-enable one) and are **never** reconciled against discovery — an id for a channel the bot has
+  left stays excluded, so re-inviting the bot can't quietly resume it. When events land (proposals.md
+  §8) exclusion must gate **event handling** too, or muted channels start producing candidates again.
 - **CSS colors: only use vars that are actually defined.** `--busy-text` and `--busy-badge-bg`
   do NOT exist (an undefined var silently falls back, rendering grey — this bit the "Running"
   badge and poll-age). The defined green tokens are `--busy` (vivid), `--green-text` (soft),

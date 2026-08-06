@@ -129,14 +129,25 @@ function setCursor(name, channelId, ts, { clearThreads = true } = {}) {
   const c = forChannel(name, channelId);
   c.cursor = ts || null;
   c.since = ts || null; // the displayed "watching from" point moves with an explicit set
-  if (clearThreads) {
-    c.threads = {};
-    const w = forWatcher(name);
-    for (const k of Object.keys(w.seen)) {
-      if (k.startsWith(`${channelId}:`)) delete w.seen[k];
-    }
-  }
+  if (clearThreads) clearChannelTracking(name, channelId);
   return c.cursor;
+}
+
+/**
+ * Drop a channel's tracked threads and its seen-markers, leaving cursor/since
+ * intact. This is what makes excluding a channel actually reclaim its cost: the
+ * threads are what get re-scanned for replies, so a channel nobody scans must
+ * not keep occupying the tracked-thread budget. Returns how many threads went.
+ */
+function clearChannelTracking(name, channelId) {
+  const c = forChannel(name, channelId);
+  const dropped = Object.keys(c.threads || {}).length;
+  c.threads = {};
+  const w = forWatcher(name);
+  for (const k of Object.keys(w.seen)) {
+    if (k.startsWith(`${channelId}:`)) delete w.seen[k];
+  }
+  return dropped;
 }
 
 /** Cache a channel's human name (from conversations.info). */
@@ -242,6 +253,7 @@ module.exports = {
   sinceOf,
   setSince,
   setCursor,
+  clearChannelTracking,
   setPaused,
   isPaused,
   setChannelName,
