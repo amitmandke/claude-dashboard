@@ -548,6 +548,16 @@ cannot defeat the limiter by forgetting to back off. Bounds are `CLAUDE_DASH_SLA
 and logged, which costs nothing because the cursor resumes exactly where the running pass leaves off.
 The pacing policy is pure over an injected clock, so it is unit-tested with no timers or sockets.
 
+The queue has **two lanes and one rate.** Background polling and interactive requests share the same
+gap, backoff and serialization, but a call marked `interactive` takes the *next* slot rather than the
+last. Without it a UI request queues behind the whole fan-out: opening the watcher editor mid-poll
+cost 11s (a full pass, ~70s) for two calls that need ~2.3s, because `auth.test` and
+`users.conversations` sit behind up to 58 paced background calls. Only the endpoints that exist to
+serve the editor (`listBots`, `listChannels`) use the lane, so it can't be spread around until
+everything is "urgent". Priority is ordering only — Slack sees an identical call rate either way, so
+the limiter keeps its guarantee. The dialog also no longer *waits* on those calls: it opens first and
+fills the bot picker and channel list in afterwards.
+
 The Slack client (`slack.js`) is coverage-excluded like the terminal backends (pure network),
 while the pipeline + control logic (`runWatcherOnce`, pause/resume, config/state/match/classify/repos)
 is unit-tested against a stub client and an injected timer.

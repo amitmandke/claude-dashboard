@@ -164,6 +164,21 @@ a function testable, export it (several are exported solely for tests, noted as 
   token counts per `message.id`, never per line — a per-line sum overcounts 3-5×.
 - Interaction features are iTerm2-only; observation works with any terminal.
 - First osascript call triggers a one-time macOS "control iTerm2" permission dialog.
+- **SSE-driven grids must not rebuild unless something structural changed.** The snapshot arrives
+  every 1.5s; `grid.textContent = ''` + rebuild throws away scroll position, hover and focus, which
+  reads as the tab yanking you to the top mid-scroll. Both grids guard against it with a signature of
+  the render-affecting data (`lastCandSig` for candidates, `lastWatchSig` + `watchSig()` for
+  watchers) and return early when it matches. The subtlety is **relative time**: `polled 40s ago`
+  changes every tick with no data change, so `lastPollAt`/`staged` are excluded from the watcher
+  signature and refreshed in place by `refreshWatchVolatile()` against `.watch-card[data-name]` —
+  don't "simplify" by putting them back in the signature, that restores the every-tick rebuild.
+  `watchEditOpen` additionally clears the signature, so the render after an inline edit closes
+  rebuilds from real state instead of trusting a DOM the editor was mutating.
+- **The watcher editor must open before its Slack calls, not after.** `openWatcherEditor` used to
+  `await wdLoadBots()` before `showModal()`, so clicking Edit did nothing visible for as long as
+  those calls took — ~1s idle, **11s measured mid-poll**, and ~70s for a full pass. The Slack-backed
+  setup now runs in an `afterOpen` closure invoked after `showModal()`. Keep it that way: anything
+  new in the open path that touches Slack belongs in that closure.
 - **Every Slack call goes through the one shared queue in `pace.js` — never add a per-call retry.**
   `slack.js` wraps each request in `pacer.run()`: serial, minimum gap (`CLAUDE_DASH_SLACK_MIN_GAP_MS`,
   default 1200ms), and on a 429 it pauses the *whole* queue for `Retry-After`, doubles the gap to a
@@ -174,7 +189,13 @@ a function testable, export it (several are exported solely for tests, noted as 
   silently lost late thread replies). Because paced passes can exceed the poll interval, `tick` is
   single-flight — an overlapping tick is skipped and logged, and the cursor makes that free.
   `pace.js` is pure over an injected clock/sleep so the policy is unit-tested; `slack.js` stays
-  coverage-excluded.
+  coverage-excluded. **Two lanes, one rate:** `run(task, { interactive: true })` — reached via
+  `slack.createClient({ interactive: true })`, which `listBots`/`listChannels` use because they exist
+  only to serve the editor dialog — takes the *next* gap slot instead of the last, so a person
+  waiting on a form doesn't queue behind a poll's fan-out. It changes order only: same gap, same 429
+  backoff, same serialization, so Slack cannot tell the lanes apart and the limiter is still
+  undefeatable. This is also why the queue is two explicit arrays rather than the original promise
+  chain — a chain can only append, so priority was impossible to express.
 - **Slack watchers poll, never Socket Mode** — a persistent cursor (`watchers-state.json`)
   backfills messages missed while the machine was asleep; a real-time socket would drop them.
   Slack's `conversations.history` omits thread replies, so late `@you` mentions are caught by

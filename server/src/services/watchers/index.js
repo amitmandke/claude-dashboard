@@ -423,8 +423,12 @@ const runtime = new Map();
 // `buildDeps` and `scheduleInterval` are reassignable so tests can inject a fake
 // Slack client and a no-op timer (see _setTestHooks) — no network, no real
 // intervals leaking out of a test run.
-/** Reassignable for tests: one Slack client per bot token (no network in tests). */
-let createClient = (token) => slack.createClient({ token });
+/**
+ * Reassignable for tests: one Slack client per bot token (no network in tests).
+ * `interactive` marks a client whose calls serve a waiting UI request, so they
+ * take the next pacer slot instead of queueing behind a poll's fan-out.
+ */
+let createClient = (token, { interactive = false } = {}) => slack.createClient({ token, interactive });
 
 let buildDeps = (cfg) => {
   const client = createClient(cfg.token);
@@ -788,7 +792,7 @@ async function listBots() {
       row.error = `token reference "${b.tokenRef}" could not be read`;
     } else {
       try {
-        const auth = await createClient(token).authTest();
+        const auth = await createClient(token, { interactive: true }).authTest();
         row.identity = { user: auth.user || null, team: auth.team || null, botId: auth.bot_id || null };
       } catch (e) {
         row.error = e.message;
@@ -809,7 +813,8 @@ async function listChannels(botRef = watcherConfig.DEFAULT_BOT_REF) {
   const bot = cfg.bots[botRef];
   if (!bot) return { ok: false, error: `unknown bot "${botRef}"` };
   if (!bot.token) return { ok: false, error: `token reference "${bot.tokenRef}" could not be read` };
-  const client = createClient(bot.token);
+  // the editor is waiting on this, so it jumps the poll queue (same rate, better order)
+  const client = createClient(bot.token, { interactive: true });
   for (const types of ['public_channel,private_channel', 'public_channel']) {
     const channels = [];
     let cursor;

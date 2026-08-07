@@ -72,12 +72,13 @@ function rateLimitedError(method, headers) {
  * sockets), as is `pacer` — pass a fresh one to test a client in isolation, or
  * leave it to share the process-wide queue with every other client.
  */
-function createClient({ token, request = httpsRequest, pacer = sharedPacer } = {}) {
+function createClient({ token, request = httpsRequest, pacer = sharedPacer, interactive = false } = {}) {
   if (!token) throw new Error('slack: missing bot token');
 
   function call(method, params = {}) {
     const path = `/api/${method}?${queryString(params)}`;
-    // the pacer owns spacing + 429 backoff/retry for the whole process
+    // the pacer owns spacing + 429 backoff/retry for the whole process; an
+    // `interactive` client only changes its place in the queue, never the rate
     return pacer.run(async () => {
       const res = await request({ path, token, method });
       if (res.status === 429) throw rateLimitedError(method, res.headers);
@@ -90,7 +91,7 @@ function createClient({ token, request = httpsRequest, pacer = sharedPacer } = {
       if (!data.ok && data.error === 'ratelimited') throw rateLimitedError(method, res.headers);
       if (!data.ok) throw new Error(`slack ${method}: ${data.error || 'unknown_error'}`);
       return data;
-    });
+    }, { interactive });
   }
 
   return {
