@@ -956,6 +956,7 @@ document.getElementById('new-candidate-form').addEventListener('submit', (e) => 
 
 const watchTemplate = document.getElementById('watcher-template');
 let watchEditOpen = false; // true while an inline channel time-editor is open (pauses re-render)
+let lastWatchSig = null; // signature of the last watcher render — skip rebuilds when unchanged
 let watchFlashName = null; // a just-saved watcher: scroll to its card once and flash it
 
 // Re-pull watcher status and re-render now, so a Pause/Resume/Run reflects
@@ -1002,6 +1003,7 @@ function buildWatcher(w) {
   const type = w.type || w.trigger || 'slack';
   const schedule = type === 'schedule';
   card.dataset.state = w.state;
+  card.dataset.name = w.name; // lets refreshWatchVolatile find this card without a rebuild
   card.querySelector('.watch-name').textContent = w.name;
   card.querySelector('.watch-trigger').textContent =
     `${TRIGGER_GLYPH[type] || '·'} ${TYPE_LABEL[type] || type}`;
@@ -1288,13 +1290,49 @@ function openChannelTimeEditor({ row, sub, pauseBtn, setBtn, w, ch }) {
   input.focus();
 }
 
+// Everything that affects the grid's STRUCTURE. `lastPollAt`/`staged` are
+// deliberately excluded: they move on every poll while their text is relative to
+// now, so they are refreshed in place (below) instead of forcing a rebuild.
+function watchSig(list) {
+  return JSON.stringify(list.map((w) => ({ ...w, lastPollAt: null, staged: null })));
+}
+
+// The only two bits that change without a structural change. Updating them in
+// place is what lets the rebuild be skipped on the vast majority of ticks.
+function refreshWatchVolatile(list) {
+  const grid = document.getElementById('watch-grid');
+  for (const w of list) {
+    const card = grid.querySelector(`.watch-card[data-name="${CSS.escape(w.name)}"]`);
+    if (!card) continue;
+    card.querySelector('.watch-staged').textContent = `${w.staged || 0} staged`;
+    if ((w.type || w.trigger) === 'schedule') continue; // shows a schedule, not a poll age
+    const poll = card.querySelector('.watch-lastpoll');
+    poll.textContent = w.lastPollAt ? `polled ${agoText(w.lastPollAt)}` : 'not polled yet';
+    poll.title = w.lastPollAt ? `last poll ${fmtTime(w.lastPollAt)}` : '';
+    poll.classList.toggle('live', w.state === 'running' && !!w.lastPollAt);
+  }
+}
+
 function renderWatchers(data) {
   // Don't rebuild the grid while a channel time-editor is open — the periodic
-  // SSE snapshot would otherwise destroy the inline picker mid-edit.
-  if (watchEditOpen) return;
+  // SSE snapshot would otherwise destroy the inline picker mid-edit. Forget the
+  // signature too, so the render after it closes rebuilds from real state rather
+  // than trusting a DOM the inline editor has been mutating.
+  if (watchEditOpen) { lastWatchSig = null; return; }
   const status = data.watchers || { watchers: [] };
   const list = status.watchers || [];
   const grid = document.getElementById('watch-grid');
+
+  // The SSE snapshot arrives every 1.5s. Rebuilding the grid then threw away
+  // scroll position (jumping the tab to the top mid-read) plus hover and focus,
+  // so only rebuild when something structural actually changed — same guard the
+  // candidate grid uses.
+  // include the flash target: a save should always rebuild so the just-saved card
+  // gets its highlight, even when nothing structural changed.
+  const sig = watchSig(list) + '|' + watchFlashName;
+  if (sig === lastWatchSig) { refreshWatchVolatile(list); return; }
+  lastWatchSig = sig;
+
   grid.textContent = '';
   for (const w of list) grid.appendChild(buildWatcher(w));
 
@@ -1801,6 +1839,8 @@ function wdSetSchedMode(mode) {
  */
 async function openWatcherEditor(name, kind) {
   wdSetError('');
+  // Slack-backed setup, deferred until the dialog is actually on screen (below).
+  let afterOpen = null;
   wed.editing = name || null;
   wed.rules = [];
   wed.mentions = [];
@@ -1874,14 +1914,21 @@ async function openWatcherEditor(name, kind) {
     wed.channels = Array.isArray(trigger.channels) ? [...trigger.channels] : [];
     wdRenderMentions();
     wdRenderRules();
-    await wdLoadBots(trigger.botRef);
-    wdSetChanMode(auto ? 'auto' : 'pick');
-    wdLoadChannels(); // fresh every open, so an edit shows the bot's channels as they are now
+    // These hit Slack through the shared pacer, so they cost ~1s idle and were
+    // measured at 11s mid-poll (a full pass would be ~70s). Awaiting them here
+    // meant the Edit button did nothing visible for that whole time, so they run
+    // after the dialog is up instead — the bot picker and channel list fill in.
+    afterOpen = async () => {
+      await wdLoadBots(trigger.botRef);
+      wdSetChanMode(auto ? 'auto' : 'pick');
+      wdLoadChannels(); // fresh every open, so an edit shows the bot's channels as they are now
+    };
   }
   wdSyncCadences();
   wdSync();
   watchEditOpen = true; // stop the SSE re-render from rebuilding the tab under us
   wdDialog.showModal();
+  if (afterOpen) await afterOpen();
 }
 
 async function saveWatcher() {

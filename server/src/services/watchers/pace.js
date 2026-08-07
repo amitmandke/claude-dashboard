@@ -19,6 +19,13 @@
  *     `Retry-After`, the gap doubles (to `maxGapMs`), and the call is retried.
  *     After `decayAfter` clean calls the gap halves back toward the floor — so
  *     pressure from Slack widens the buffer and calm narrows it again.
+ *   - **Two lanes.** `run(task, { interactive: true })` takes the next gap slot
+ *     instead of the last, because a person waiting on a dialog should not sit
+ *     behind a background poll's fan-out. Measured before this existed: opening
+ *     the watcher editor mid-poll took 11s (and a full pass would be ~70s) for
+ *     two calls that need ~2.3s. Priority changes the *order*, never the rate —
+ *     the gap, the 429 backoff and the serialization are identical, so Slack
+ *     cannot tell the lanes apart and the limiter is still undefeatable.
  *
  * Pure over its injected `now`/`sleep`, so the whole policy is unit-testable
  * with no timers and no sockets (`slack.js` itself stays coverage-excluded).
@@ -41,8 +48,11 @@ function createPacer({
   let gapMs = minGapMs;
   let okStreak = 0;
   let lastStartedAt = 0;
-  let queued = 0;
-  let chain = Promise.resolve();
+  // Explicit queues rather than a promise chain: a chain can only ever append,
+  // so an interactive call could never overtake queued background work.
+  const background = [];
+  const interactive = [];
+  let draining = false;
 
   async function attempt(task) {
     for (let i = 1; ; i++) {
@@ -72,21 +82,45 @@ function createPacer({
     }
   }
 
-  /** Queue `task` (an async function). Resolves/rejects with its result. */
-  function run(task) {
-    queued += 1;
-    const result = chain.then(() => attempt(task));
-    // keep the chain alive whatever happens, and never leave an unhandled rejection
-    chain = result.then(
-      () => { queued -= 1; },
-      () => { queued -= 1; }
-    );
-    return result;
+  /**
+   * Queue `task` (an async function). Resolves/rejects with its result.
+   * `interactive` jumps ahead of queued background work — it still waits for the
+   * gap, and it cannot preempt a call already in flight.
+   */
+  function run(task, { interactive: urgent = false } = {}) {
+    return new Promise((resolve, reject) => {
+      (urgent ? interactive : background).push({ task, resolve, reject });
+      drain();
+    });
+  }
+
+  // One drain loop owns the single in-flight slot, so `run` stays fire-and-await
+  // for callers and existing `Promise.all` fan-out keeps queueing rather than
+  // stampeding.
+  async function drain() {
+    if (draining) return;
+    draining = true;
+    try {
+      while (interactive.length || background.length) {
+        const job = interactive.length ? interactive.shift() : background.shift();
+        try {
+          job.resolve(await attempt(job.task));
+        } catch (e) {
+          job.reject(e); // a failed call must not stall the queue
+        }
+      }
+    } finally {
+      draining = false;
+    }
   }
 
   /** Current pacing state — for logging/status, not control. */
   function stats() {
-    return { gapMs, minGapMs, maxGapMs, okStreak, queued };
+    return {
+      gapMs, minGapMs, maxGapMs, okStreak,
+      queued: background.length + interactive.length,
+      waitingInteractive: interactive.length,
+    };
   }
 
   return { run, stats };

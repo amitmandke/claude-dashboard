@@ -1618,6 +1618,45 @@ test('pacer: serializes tasks and spaces their starts by the minimum gap', async
   assert.ok(t2 - t1 >= 1000, `third call waited the gap (${t2 - t1}ms)`);
 });
 
+test('pacer: an interactive call jumps queued background work', async () => {
+  const clock = fakeClock();
+  const p = pace.createPacer({ minGapMs: 1000, now: clock.now, sleep: clock.sleep });
+  const starts = [];
+  const task = (id) => () => { starts.push(id); return Promise.resolve(id); };
+
+  // 'a' takes the in-flight slot immediately; b/c queue behind it. The
+  // interactive call is submitted LAST but must run before them.
+  const pending = [p.run(task('a')), p.run(task('b')), p.run(task('c'))];
+  pending.push(p.run(task('ui'), { interactive: true }));
+  await Promise.all(pending);
+
+  assert.deepEqual(starts, ['a', 'ui', 'b', 'c'], 'ui overtook queued work but not the in-flight call');
+});
+
+test('pacer: interactive calls still pay the gap — priority changes order, not rate', async () => {
+  const clock = fakeClock();
+  const p = pace.createPacer({ minGapMs: 1000, now: clock.now, sleep: clock.sleep });
+  const starts = [];
+  const task = () => () => { starts.push(clock.at()); return Promise.resolve(); };
+  await Promise.all([
+    p.run(task(), { interactive: true }),
+    p.run(task(), { interactive: true }),
+    p.run(task(), { interactive: true }),
+  ]);
+  assert.ok(starts[1] - starts[0] >= 1000, `gap held (${starts[1] - starts[0]}ms)`);
+  assert.ok(starts[2] - starts[1] >= 1000, `gap held (${starts[2] - starts[1]}ms)`);
+});
+
+test('pacer: a failing task rejects its own caller without stalling the queue', async () => {
+  const clock = fakeClock();
+  const p = pace.createPacer({ minGapMs: 1, now: clock.now, sleep: clock.sleep });
+  const boom = p.run(() => Promise.reject(new Error('nope')));
+  const after = p.run(() => Promise.resolve('ran'));
+  await assert.rejects(boom, /nope/);
+  assert.equal(await after, 'ran', 'the queue kept draining past the failure');
+  assert.equal(p.stats().queued, 0, 'nothing left queued');
+});
+
 test('pacer: a rate-limited call pauses the queue, widens the gap, and retries', async () => {
   const clock = fakeClock();
   const logs = [];
