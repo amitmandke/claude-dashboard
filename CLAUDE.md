@@ -159,6 +159,16 @@ a function testable, export it (several are exported solely for tests, noted as 
   workers, recursively. Generation is strictly one-at-a-time with a per-session turn
   key + 2-min failure back-off; don't make it per-tick or parallel, each call spawns a
   full Claude Code process (~15s).
+- **Never spawn `claude` by bare name — resolve it.** `config.resolveClaudeBin()` probes
+  `CLAUDE_DASH_CLAUDE_BIN` → `~/.local/bin/claude` (native installer symlink) → `which` → the
+  legacy `~/.claude/local/claude`. The launchd plist pins a minimal PATH that does **not**
+  include `~/.local/bin`, so when Claude Code moved to the native installer every headless run
+  died with `spawn claude ENOENT` — for two days. Prefer the `~/.local/bin` symlink over the
+  resolved `~/.local/share/claude/versions/<v>` file so a Claude Code upgrade can't invalidate
+  the path. Both `aiTitles.js` and `watchers/classify.js` spawn it, and the second failure was
+  **silent**: `classify()` degrades to `fallbackPlan` on any error, so the only visible symptom
+  was candidates quietly arriving with `intent=- skill=- conf=0`. That catch now logs — keep it
+  logging, and when adding another degrade-on-error path, log there too.
 - **Transcript `usage` repeats per line**: one assistant API response becomes several
   jsonl lines (one per content block), each carrying the same `message.usage`. Sum
   token counts per `message.id`, never per line — a per-line sum overcounts 3-5×.

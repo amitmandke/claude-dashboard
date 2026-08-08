@@ -1908,3 +1908,21 @@ test('runWatcherOnce: two mentions of one thread in a single pass stage once', a
   assert.equal(r.staged, 1);
   assert.equal(candidates.added.length, 1, 'collapsed per thread within the pass');
 });
+
+test('classify: a failed headless run logs before degrading to unclassified', async () => {
+  const lines = [];
+  const plan = await classify.classify(
+    { threadText: 'please review', prRefs: [{ repo: 'acme/widgets', number: 7 }] },
+    {
+      _run: async () => {
+        throw new Error('spawn claude ENOENT');
+      },
+      _log: (l) => lines.push(l),
+    }
+  );
+  assert.equal(plan.unclassified, true);
+  assert.equal(plan.skill, '');
+  assert.equal(lines.length, 1, 'the outage must leave exactly one trace');
+  assert.match(lines[0], /classify unavailable/);
+  assert.match(lines[0], /ENOENT/);
+});
