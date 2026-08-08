@@ -2,8 +2,59 @@
 
 const path = require('path');
 const os = require('os');
+const fs = require('fs');
+const { execFileSync } = require('child_process');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+
+function isExecutableFile(p) {
+  try {
+    if (!fs.statSync(p).isFile()) return false; // statSync follows the version symlink
+    fs.accessSync(p, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function whichClaude() {
+  try {
+    return execFileSync('/usr/bin/which', ['claude'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Absolute path to the `claude` binary used for headless runs (AI titles, the
+ * watcher classifier).
+ *
+ * A bare `'claude'` is NOT enough: the launchd agent runs with a fixed minimal
+ * PATH, while Claude Code's native installer lives in `~/.local/bin` (a symlink
+ * into `~/.local/share/claude/versions/`). When the installer moved there, every
+ * headless spawn started failing with `spawn claude ENOENT` — loudly for AI
+ * titles, and *silently* for the classifier, which swallows the error and
+ * degrades to unclassified candidates. So probe the known locations instead of
+ * trusting the environment, preferring the stable symlink over a version file so
+ * a Claude Code upgrade doesn't invalidate the path.
+ *
+ * Exported for tests; every dependency is injectable.
+ */
+function resolveClaudeBin({
+  env = process.env,
+  home = os.homedir(),
+  isExecutable = isExecutableFile,
+  which = whichClaude,
+} = {}) {
+  if (env.CLAUDE_DASH_CLAUDE_BIN) return env.CLAUDE_DASH_CLAUDE_BIN; // explicit override wins, verbatim
+  const localBin = path.join(home, '.local', 'bin', 'claude'); // native installer (current)
+  if (isExecutable(localBin)) return localBin;
+  const onPath = which(); // homebrew/npm installs, and any interactive-shell setup
+  if (onPath && isExecutable(onPath)) return onPath;
+  const legacy = path.join(home, '.claude', 'local', 'claude'); // pre-native installer
+  if (isExecutable(legacy)) return legacy;
+  return 'claude'; // last resort: let spawn search PATH and report ENOENT
+}
 // dashboard's own data dir; override (e.g. in tests) with CLAUDE_DASH_DATA_DIR
 const DATA_DIR = process.env.CLAUDE_DASH_DATA_DIR || path.join(os.homedir(), '.claude-dashboard');
 
@@ -34,7 +85,8 @@ module.exports = {
   // subscription; no API key). Disable with CLAUDE_DASH_AI_TITLES=0.
   AI_TITLES: process.env.CLAUDE_DASH_AI_TITLES !== '0',
   AI_TITLE_MODEL: process.env.CLAUDE_DASH_AI_TITLE_MODEL || 'haiku',
-  CLAUDE_BIN: process.env.CLAUDE_DASH_CLAUDE_BIN || 'claude',
+  CLAUDE_BIN: resolveClaudeBin(),
+  resolveClaudeBin, // exported for tests
   // headless runs execute here so the registry can recognize and hide them
   HEADLESS_CWD: path.join(DATA_DIR, 'headless'),
 

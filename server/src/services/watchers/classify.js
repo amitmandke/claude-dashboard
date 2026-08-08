@@ -173,16 +173,25 @@ function runHeadless(prompt) {
   });
 }
 
+/** Matches the timestamped line format the watcher loop logs with. */
+function defaultLog(line) {
+  console.log(`[${new Date().toISOString()}] ${line}`);
+}
+
 /**
  * Classify one thread → a plan. Queued so only one headless process runs at a
  * time. `_run` is injectable for tests (defaults to the real headless call).
  */
-function classify(input, { _run = runHeadless } = {}) {
+function classify(input, { _run = runHeadless, _log = defaultLog } = {}) {
   const task = queue.then(async () => {
     try {
       const plan = parseResult(await _run(buildPrompt(input)));
       return plan || fallbackPlan(input);
-    } catch {
+    } catch (e) {
+      // Degrading to "unclassified" is deliberate, but doing it SILENTLY hid a
+      // two-day outage: every candidate quietly arrived with no intent and no
+      // skill after the `claude` binary moved. Always leave a trace.
+      _log(`ERROR watcher classify unavailable, staging unclassified: ${e.message}`);
       return fallbackPlan(input);
     }
   });
