@@ -985,8 +985,8 @@ function watchAction(name, verb) {
 
 // The two watcher types the UI names: a Slack watcher, and a Generic watcher
 // (a prompt of your own on a cadence — `trigger.type: 'schedule'` in config).
-const TRIGGER_GLYPH = { slack: '⌗', schedule: '◷' };
-const TYPE_LABEL = { slack: 'slack', schedule: 'generic' };
+const TRIGGER_GLYPH = { slack: '⌗', schedule: '◷', github: '⎇' };
+const TYPE_LABEL = { slack: 'slack', schedule: 'generic', github: 'github' };
 
 /** "every 30m" / "daily 09:00" / a cron expression — a schedule in words. */
 function scheduleText(w) {
@@ -1045,7 +1045,10 @@ function buildWatcher(w) {
 
   const errEl = card.querySelector('.watch-error');
   errEl.hidden = !w.lastError;
-  if (w.lastError) errEl.textContent = '⚠ ' + w.lastError;
+  if (w.lastError) {
+    // an offline blip reads as weather, not a fault — same line, softer glyph
+    errEl.textContent = (w.state === 'offline' ? '◌ ' : '⚠ ') + w.lastError;
+  }
 
   // after a save the grid rebuilds; point at the card that changed instead of
   // leaving it to be found among the others

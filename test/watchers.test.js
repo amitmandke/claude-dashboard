@@ -1926,3 +1926,298 @@ test('classify: a failed headless run logs before degrading to unclassified', as
   assert.match(lines[0], /classify unavailable/);
   assert.match(lines[0], /ENOENT/);
 });
+
+// ---- runGithubWatcherOnce -------------------------------------------------
+
+/** A stub gh client returning a fixed queue; no subprocess, no network. */
+function ghStub(prs, { login = 'me' } = {}) {
+  const calls = [];
+  return {
+    calls,
+    async login() {
+      calls.push('login');
+      return login;
+    },
+    async reviewQueue(args) {
+      calls.push({ reviewQueue: args });
+      return { total: prs.length, prs };
+    },
+  };
+}
+
+function ghPr(over = {}) {
+  return {
+    repo: 'acme/java-svc',
+    number: 1,
+    title: 'AK-1: a change',
+    body: '',
+    url: 'https://github.com/acme/java-svc/pull/1',
+    author: 'human',
+    isDraft: false,
+    tipOid: 'aaaaaaa1111',
+    tipCommittedDate: '2026-08-09T10:00:00Z',
+    myLastReviewAt: null,
+    ...over,
+  };
+}
+
+/**
+ * `seen` markers persist in the temp state file across `state._reset()` (which
+ * only drops the cache), so each test gets its own watcher name — otherwise one
+ * test's staged keys suppress the next test's identical PR.
+ */
+let ghWatcherSeq = 0;
+function ghW(over = {}) {
+  return { ...GH_WATCHER, name: `reviews-${++ghWatcherSeq}`, ...over };
+}
+
+const GH_WATCHER = {
+  name: 'reviews',
+  type: 'github',
+  search: 'review-requested:@me is:open is:pr',
+  login: '',
+  projects: ['AK'],
+  excludeAuthors: [],
+  includeAuthors: [],
+  skipDrafts: true,
+  first: 50,
+  maxGroupSize: 5,
+  maxStagePerTick: 5,
+  skillsByStack: { java: 'review-java', go: 'review-go' },
+  defaultCwd: '/fallback',
+  template: '',
+};
+
+test('runGithubWatcherOnce: stages one candidate per story, with repo and skill', async () => {
+  state._reset();
+  const added = [];
+  const r = await loop.runGithubWatcherOnce(ghW(), {
+    ghClient: ghStub([
+      ghPr({ number: 1, title: 'AK-10 step one', body: 'AK-99' }),
+      ghPr({ number: 2, title: 'AK-11 step two', body: 'AK-99' }),
+      ghPr({ repo: 'acme/go-svc', number: 7, title: 'AK-20 solo' }),
+    ]),
+    resolveRepo: (repo) => `/code/${repo.split('/')[1]}`,
+    detectStack: (dir) => (dir && dir.includes('go-svc') ? 'go' : 'java'),
+    candidates: { add: (c) => added.push(c) },
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+
+  assert.equal(r.staged, 2, 'a 2-PR story and a lone PR');
+  assert.equal(r.total, 3);
+  const story = added.find((c) => c.ref.storyKey === 'AK-99');
+  assert.equal(story.cwd, '/code/java-svc');
+  assert.equal(story.skill, 'review-java');
+  assert.equal(story.source, 'github');
+  assert.equal(story.producer, 'watcher');
+  assert.equal(story.ref.prRefs.length, 2);
+  const solo = added.find((c) => c.ref.storyKey === null);
+  assert.equal(solo.skill, 'review-go');
+});
+
+test('runGithubWatcherOnce: needs no classifier at all', async () => {
+  state._reset();
+  // the classifier being unavailable must not affect this producer
+  const r = await loop.runGithubWatcherOnce(ghW(), {
+    ghClient: ghStub([ghPr()]),
+    resolveRepo: () => '/code/java-svc',
+    detectStack: () => 'java',
+    candidates: { add: () => {} },
+    classify: () => {
+      throw new Error('classifier must not be called');
+    },
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  assert.equal(r.staged, 1);
+});
+
+test('runGithubWatcherOnce: an unchanged PR is suppressed on the next pass', async () => {
+  state._reset();
+  const deps = () => ({
+    ghClient: ghStub([ghPr()]),
+    resolveRepo: () => '/code/java-svc',
+    detectStack: () => 'java',
+    candidates: { add: () => {} },
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  const w = ghW();
+  const first = await loop.runGithubWatcherOnce(w, deps());
+  assert.equal(first.staged, 1);
+  const second = await loop.runGithubWatcherOnce(w, deps());
+  assert.equal(second.staged, 0, 'same tip commit -> already decided');
+  assert.equal(second.suppressed, 1);
+});
+
+test('runGithubWatcherOnce: a new commit resurfaces it as a re-review', async () => {
+  state._reset();
+  const base = {
+    resolveRepo: () => '/code/java-svc',
+    detectStack: () => 'java',
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+  const w = ghW();
+  const first = await loop.runGithubWatcherOnce(w, {
+    ...base,
+    ghClient: ghStub([ghPr({ tipOid: 'old1111' })]),
+    candidates: { add: () => {} },
+  });
+  assert.equal(first.staged, 1);
+
+  const added = [];
+  const second = await loop.runGithubWatcherOnce(w, {
+    ...base,
+    // reviewed, then the author pushed: tip is newer than my review
+    ghClient: ghStub([
+      ghPr({ tipOid: 'new2222', myLastReviewAt: '2026-08-09T09:00:00Z', tipCommittedDate: '2026-08-09T12:00:00Z' }),
+    ]),
+    candidates: { add: (c) => added.push(c) },
+  });
+  assert.equal(second.staged, 1, 'a changed PR is not the decided one');
+  assert.equal(added[0].priority, 2, 're-reviews outrank fresh ones');
+});
+
+test('runGithubWatcherOnce: resolves the login when config leaves it blank', async () => {
+  state._reset();
+  const client = ghStub([], { login: 'discovered-user' });
+  await loop.runGithubWatcherOnce(ghW(), {
+    ghClient: client,
+    candidates: { add: () => {} },
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  assert.ok(client.calls.includes('login'));
+  assert.equal(client.calls.find((c) => c.reviewQueue).reviewQueue.login, 'discovered-user');
+});
+
+test('runGithubWatcherOnce: a configured login skips the lookup call', async () => {
+  state._reset();
+  const client = ghStub([]);
+  await loop.runGithubWatcherOnce(ghW({ login: 'fixed' }), {
+    ghClient: client,
+    candidates: { add: () => {} },
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  assert.ok(!client.calls.includes('login'));
+  assert.equal(client.calls[0].reviewQueue.login, 'fixed');
+});
+
+test('runGithubWatcherOnce: a rejected candidate does not abort the pass', async () => {
+  state._reset();
+  const added = [];
+  let n = 0;
+  const r = await loop.runGithubWatcherOnce(ghW(), {
+    ghClient: ghStub([
+      ghPr({ number: 1, title: 'AK-1 one' }),
+      ghPr({ number: 2, title: 'AK-2 two' }),
+    ]),
+    resolveRepo: () => '/code/java-svc',
+    detectStack: () => 'java',
+    candidates: {
+      add: (c) => {
+        if (++n === 1) throw new Error('candidate list is full');
+        added.push(c);
+      },
+    },
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  assert.equal(r.staged, 1, 'the second one still lands');
+  assert.equal(added.length, 1);
+});
+
+test('runGithubWatcherOnce: falls back to defaultCwd for a repo with no checkout', async () => {
+  state._reset();
+  const added = [];
+  await loop.runGithubWatcherOnce(ghW(), {
+    ghClient: ghStub([ghPr({ repo: 'acme/not-cloned' })]),
+    resolveRepo: () => null,
+    detectStack: () => null,
+    candidates: { add: (c) => added.push(c) },
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  assert.equal(added[0].cwd, '/fallback');
+  assert.equal(added[0].skill, '', 'no stack detected -> no skill guessed');
+});
+
+// ---- offline vs error: transient network faults ---------------------------
+
+test('isTransientError: network weather yes, auth/config no', () => {
+  // the fault classes actually measured on a sleeping laptop (779-tick run)
+  for (const m of [
+    'getaddrinfo ENOTFOUND slack.com',
+    'read ECONNRESET',
+    'write EPIPE',
+    'read EADDRNOTAVAIL',
+    'socket hang up',
+    'slack conversations.replies: non-JSON response (HTTP 500)',
+    'connect ETIMEDOUT 1.2.3.4:443',
+  ]) {
+    assert.equal(loop.isTransientError(m), true, m);
+  }
+  for (const m of ['invalid_auth', 'missing_scope', 'account_inactive', 'gh CLI not found (gh)']) {
+    assert.equal(loop.isTransientError(m), false, m);
+  }
+});
+
+test('a transient tick failure reads offline (self-healing), a repeated one escalates, auth is error at once', async () => {
+  const cfgFile = wconfig.FILE;
+  process.env.WATCH_TEST_TOK = 'xoxb-test';
+  fs.writeFileSync(cfgFile, JSON.stringify({
+    slack: { botToken: '$WATCH_TEST_TOK' },
+    watchers: [{ name: 'mentions', enabled: true, channels: ['C1'],
+      trigger: { type: 'mention', users: ['U1'] }, intents: [], poll: { everySeconds: 120 } }],
+  }));
+  freshState();
+  loop._reset();
+
+  let fail = null; // null = succeed, else the message to throw
+  const flakyClient = {
+    history: async () => {
+      if (fail) throw new Error(fail);
+      return { messages: [], has_more: false };
+    },
+    replies: async () => ({ messages: [], has_more: false }),
+    permalink: async () => ({ permalink: '' }),
+    info: async () => ({ channel: { name: 'chan' } }),
+  };
+  loop._setTestHooks({
+    buildDeps: () => ({ client: flakyClient, repoMap: { resolve: () => null, list: () => [] },
+      skillList: [], retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 10 } }),
+    scheduleInterval: () => ({}),
+  });
+  loop.start();
+  const me = () => loop.getStatus().watchers.find((w) => w.name === 'mentions');
+  // start() fires an immediate un-awaited catch-up tick; drain it so runNow is
+  // never skipped by the single-flight guard (that skip is correct behaviour,
+  // but it would silently shift every assertion below by one pass)
+  await new Promise((r) => setTimeout(r, 20));
+  await loop.runNow('mentions'); // baseline pass so the cursor exists
+
+  // one DNS blip -> offline, not error; the message and its class are reported
+  fail = 'getaddrinfo ENOTFOUND slack.com';
+  await loop.runNow('mentions');
+  assert.equal(me().state, 'offline');
+  assert.equal(me().lastErrorTransient, true);
+  assert.match(me().lastError, /ENOTFOUND/);
+
+  // recovery clears the current fault but keeps the history
+  fail = null;
+  await loop.runNow('mentions');
+  assert.equal(me().state, 'running');
+  assert.equal(me().lastError, null);
+  assert.ok(me().lastErrorAt, 'the flap stays explainable after it healed');
+  assert.equal(me().lastErrorTransient, true);
+
+  // sustained network failure stops being weather
+  fail = 'read ECONNRESET';
+  for (let i = 0; i < 5; i++) await loop.runNow('mentions');
+  assert.equal(me().state, 'error', 'escalates after consecutive transient failures');
+
+  // an auth failure is never soft-pedaled
+  fail = null;
+  await loop.runNow('mentions'); // reset the streak
+  fail = 'invalid_auth';
+  await loop.runNow('mentions');
+  assert.equal(me().state, 'error');
+  assert.equal(me().lastErrorTransient, false);
+
+  loop.stop();
+});

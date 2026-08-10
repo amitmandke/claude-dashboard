@@ -99,6 +99,26 @@ function buildMap(base, { depth = 2, preferDir = null } = {}) {
   return mapFromCheckouts(listCheckouts(base, { depth }), preferDir);
 }
 
+/**
+ * Which language a checkout is, by its build file — `go` for `go.mod`, `java` for
+ * Maven/Gradle. Used to pick a review skill deterministically, so the choice
+ * costs nothing and keeps working when the LLM classifier is unavailable (it was
+ * down for two days once, silently). `null` when nothing recognizable is present;
+ * the caller then leaves the skill empty rather than guessing.
+ */
+const STACK_MARKERS = [
+  ['go', ['go.mod']],
+  ['java', ['pom.xml', 'build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts']],
+];
+
+function detectStack(dir, { exists = (p) => fs.existsSync(p) } = {}) {
+  if (!dir) return null;
+  for (const [stack, markers] of STACK_MARKERS) {
+    if (markers.some((m) => exists(path.join(dir, m)))) return stack;
+  }
+  return null;
+}
+
 function create({ base, depth = 2, preferDir = null, ttlMs = 5 * 60 * 1000, now = Date.now } = {}) {
   let map = null;
   let checkouts = null;
@@ -139,4 +159,4 @@ function create({ base, depth = 2, preferDir = null, ttlMs = 5 * 60 * 1000, now 
   };
 }
 
-module.exports = { create, buildMap, listCheckouts, mapFromCheckouts, parseRemoteUrl, originUrl, findCheckouts };
+module.exports = { create, buildMap, listCheckouts, mapFromCheckouts, parseRemoteUrl, originUrl, findCheckouts, detectStack };

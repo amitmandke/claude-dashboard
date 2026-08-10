@@ -82,8 +82,12 @@ const { writeJsonAtomic } = require('../../utils/fsio');
 const FILE = path.join(config.DATA_DIR, 'watchers.json');
 const MIN_POLL_SECONDS = 30;
 const SCHEMA_VERSION = 2;
-/** Trigger types the schema knows. Only `slack` is executed by the runner. */
-const SUPPORTED_TRIGGERS = ['slack', 'schedule'];
+/**
+ * Trigger types the schema knows. `slack` and `github` are executed; `schedule`
+ * validates but has no runner yet, so it lands in `disabled` with that reason
+ * rather than silently vanishing.
+ */
+const SUPPORTED_TRIGGERS = ['slack', 'schedule', 'github'];
 /** v1 trigger names → v2. `dm` is gone for good (it needed ungrantable scopes). */
 const TRIGGER_ALIASES = { mention: 'slack' };
 const RULE_ACTIONS = ['skill', 'prompt'];
@@ -251,6 +255,45 @@ function normalizeBots(raw, env = process.env, io = {}) {
 }
 
 /**
+ * Normalize a `github` trigger → the review-queue producer's settings.
+ *
+ * There is no token here on purpose: this speaks through the user's own `gh` CLI
+ * login, so there is no secret to store and nothing new to reference. Defaults
+ * are the ones validated against the real 48-PR queue: bots out (including plain
+ * `dependabot`, which carries no `[bot]` suffix), drafts out, stories capped, and
+ * a per-tick stage cap so a first run fills gradually instead of dumping ~30
+ * candidates at once.
+ */
+function normalizeGithubTrigger(t) {
+  const search =
+    typeof t.search === 'string' && t.search.trim()
+      ? t.search.trim()
+      : 'review-requested:@me is:open is:pr';
+  const login = typeof t.login === 'string' ? t.login.trim() : '';
+  const projects = asArray(t.jiraProjects).map((p) => p.toUpperCase());
+  const excludeAuthors = asArray(t.excludeAuthors);
+  const includeAuthors = asArray(t.includeAuthors);
+  if (excludeAuthors.length && includeAuthors.length) {
+    return { error: 'github trigger cannot set both includeAuthors and excludeAuthors' };
+  }
+  const first = parseInt(t.first, 10);
+  const maxGroupSize = parseInt(t.maxGroupSize, 10);
+  const maxStagePerTick = parseInt(t.maxStagePerTick, 10);
+  return {
+    type: 'github',
+    search,
+    login,
+    projects,
+    excludeAuthors,
+    includeAuthors,
+    skipDrafts: t.skipDrafts === undefined ? true : !!t.skipDrafts,
+    first: Number.isFinite(first) && first > 0 ? Math.min(first, 100) : 50,
+    maxGroupSize: Number.isFinite(maxGroupSize) && maxGroupSize > 0 ? maxGroupSize : 5,
+    maxStagePerTick: Number.isFinite(maxStagePerTick) && maxStagePerTick > 0 ? maxStagePerTick : 5,
+  };
+}
+
+/**
  * Normalize a `schedule` trigger → `{ type, everyMinutes, at, cron }` or
  * `{ error }`. One of everyMinutes / at / cron is required; `at` alone means
  * daily. Nothing here schedules anything — the runner ignores these for now.
@@ -284,6 +327,7 @@ function normalizeTrigger(raw) {
   const type = t.type;
   if (!SUPPORTED_TRIGGERS.includes(type)) return { error: `unsupported trigger type "${type}"` };
   if (type === 'schedule') return normalizeScheduleTrigger(t);
+  if (type === 'github') return normalizeGithubTrigger(t);
 
   const mentions = asArray(t.mentions);
   if (mentions.length === 0) return { error: 'slack trigger has no mention users (fail-closed)' };
@@ -398,6 +442,24 @@ function normalizeWatcher(raw, i) {
     };
   }
 
+  if (trigger.type === 'github') {
+    // The review queue changes on human timescales and costs one API call, so it
+    // polls far less often than a Slack channel; 15 minutes by default.
+    const everySeconds = Math.max(
+      MIN_POLL_SECONDS,
+      parseInt((w.poll && w.poll.everySeconds) || 900, 10) || 900
+    );
+    const template = typeof w.prompt === 'string' && w.prompt.trim() ? w.prompt : '';
+    // A `rules` entry maps a detected stack to a review skill: name the rule after
+    // the stack (`go`, `java`) so the mapping stays visible and editable in config
+    // instead of hiding in code.
+    const skillsByStack = {};
+    for (const r of rules) {
+      if (r.action.type === 'skill' && r.action.skill) skillsByStack[r.name.toLowerCase()] = r.action.skill;
+    }
+    return { ...base, ...trigger, everySeconds, template, skillsByStack };
+  }
+
   if (!trigger.discover && trigger.channels.length === 0) {
     return { ok: false, name, type: trigger.type, reason: 'no channels (fail-closed)' };
   }
@@ -444,6 +506,7 @@ function normalize(raw, env = process.env, io = {}) {
   const defaultBot = bots[DEFAULT_BOT_REF] || Object.values(bots)[0] || null;
   const list = (isPlainObject(r) && Array.isArray(r.watchers) && r.watchers) || [];
   const watchers = [];
+  const githubWatchers = [];
   const disabled = [];
   const all = [];
   list.forEach((w, i) => {
@@ -453,6 +516,8 @@ function normalize(raw, env = process.env, io = {}) {
       n.token = bot ? bot.token : null;
       n.botLabel = bot ? bot.label : '';
       watchers.push(n);
+    } else if (n.ok && n.type === 'github') {
+      githubWatchers.push(n);
     } else if (n.ok) {
       disabled.push({ name: n.name, reason: `${n.type} watcher not implemented yet` });
     } else {
@@ -465,6 +530,7 @@ function normalize(raw, env = process.env, io = {}) {
     bots,
     token: defaultBot ? defaultBot.token : null,
     watchers,
+    githubWatchers,
     disabled,
     all,
   };
@@ -480,7 +546,7 @@ function load(file = FILE, env = process.env, io = {}) {
   try {
     raw = JSON.parse(fs.readFileSync(file, 'utf8'));
   } catch {
-    return { version: SCHEMA_VERSION, fileVersion: 0, bots: {}, token: null, watchers: [], disabled: [], all: [], present: false };
+    return { version: SCHEMA_VERSION, fileVersion: 0, bots: {}, token: null, watchers: [], githubWatchers: [], disabled: [], all: [], present: false };
   }
   const onDisk = parseInt(isPlainObject(raw) && raw.version, 10);
   return {

@@ -29,7 +29,8 @@ turns (cache: `~/.claude-dashboard/ai-titles.json`); precedence is ✎ custom ti
   `services/` (sessionRegistry, transcript, customTitles, aiTitles, projects, skills,
   `candidates/store.js` = the launchable candidate list,
   `watchers/` = candidate producers, trigger→candidates (index=poll loop, config
-  = schema v2 + v1 migration, state, slack, repos, match, classify),
+  = schema v2 + v1 migration, state, slack, repos, match, classify,
+  `gh`+`reviews` = the GitHub review-queue producer),
   `terminals/` = dispatcher + procEnv + iterm + appleTerminal + tmux), `utils/fsio.js`
 - `watchers.example.json` — template for `~/.claude-dashboard/watchers.json` (placeholders only;
   schema v2). `docs/` (git-ignored) holds `proposals.md` + the approved `watchers-mock.html`
@@ -159,6 +160,21 @@ a function testable, export it (several are exported solely for tests, noted as 
   workers, recursively. Generation is strictly one-at-a-time with a per-session turn
   key + 2-min failure back-off; don't make it per-tick or parallel, each call spawns a
   full Claude Code process (~15s).
+- **A PR review queue cannot come from Slack — it comes from `gh`.** An org-subscribed channel
+  carries repo *activity* with no reviewer field, and "X requested your review" is a DM a bot
+  token structurally cannot read (`im:history` covers only DMs with the bot itself; a user token
+  was rejected). The `github` watcher (`gh.js` + `reviews.js`) asks GitHub directly through the
+  user's own `gh` login. Non-obvious things that bit during the build, all covered by tests:
+  **(a)** `review-requested:@me` does NOT exclude PRs you already reviewed, so the
+  reviewed-vs-tip-commit comparison is mandatory, not an optimization; **(b)** grouping must be
+  key-centric, never transitive — a chain fused five unrelated PRs into one group nothing could
+  name; **(c)** `SHA-256` matches a Jira-key regex, and that one coincidence chained a Dependabot
+  bump into a real story, hence `jiraProjects` / the standards denylist; **(d)** GitHub reports
+  Dependabot as plain `dependabot`, with no `[bot]` suffix, so suffix-matching alone lets every
+  bump through; **(e)** the dedupe key embeds the tip commit so suppression and re-review are one
+  rule. `gh.js` is coverage-excluded (pure I/O, like `slack.js`); keep the decisions in
+  `reviews.js`, which is unit-tested at 100% lines. Skills come from the repo's build file, never
+  the LLM — that is what keeps this producer alive when the classifier is down.
 - **Never spawn `claude` by bare name — resolve it.** `config.resolveClaudeBin()` probes
   `CLAUDE_DASH_CLAUDE_BIN` → `~/.local/bin/claude` (native installer symlink) → `which` → the
   legacy `~/.claude/local/claude`. The launchd plist pins a minimal PATH that does **not**
@@ -217,6 +233,13 @@ a function testable, export it (several are exported solely for tests, noted as 
   already-decided thread was silently dropped for the 7-day `seen` window — the re-ping pattern of a
   PR-review thread. Taking the *first* qualifying reply instead of the newest reintroduces the bug in
   a subtler form: the old, already-decided mention masks the new ask (a test covers this).
+- **`normalize()` splits runnable watchers by kind; the control surface must re-join them.**
+  `cfg.watchers` is slack-only and `cfg.githubWatchers` is github-only, so the Slack poll loop can
+  never be handed a trigger it cannot execute. But resume/reconcile/start-all look a watcher up
+  **by name** and must find it whatever its kind — that is what `runnableWatchers(cfg)` is for.
+  Two related traps: a github-only config has no Slack token, so `buildDeps` must still run (a
+  null `deps` makes `tick` return silently and the watcher never fires), and a missing Slack token
+  must disable the slack watchers only, not the whole feature.
 - **Watcher state is keyed per channel, and all configured channels are scanned.**
   `state.js` is `watcher → channels[channelId] → { cursor, name, threads }` (+ watcher-level
   `seen`, already `channel:thread` keyed); each channel has its own cursor so they backfill
@@ -332,6 +355,13 @@ a function testable, export it (several are exported solely for tests, noted as 
   re-enable one) and are **never** reconciled against discovery — an id for a channel the bot has
   left stays excluded, so re-inviting the bot can't quietly resume it. When events land (proposals.md
   §8) exclusion must gate **event handling** too, or muted channels start producing candidates again.
+- **Watcher `offline` ≠ `error` — don't collapse them.** A sleeping laptop's DarkWake windows
+  produce transient DNS/socket failures every few polls; `tick` classifies those
+  (`isTransientError`) as amber `offline`, escalating to red `error` only after
+  `OFFLINE_ESCALATE_AFTER` consecutive failures, while auth/scope/config failures go red at
+  once. Recovery clears `lastError` but keeps `lastErrorAt`/`lastErrorTransient` — a flap that
+  healed before anyone looked must stay explainable. When adding a new failure path, route the
+  message through the same classification rather than setting `state='error'` directly.
 - **CSS colors: only use vars that are actually defined.** `--busy-text` and `--busy-badge-bg`
   do NOT exist (an undefined var silently falls back, rendering grey — this bit the "Running"
   badge and poll-age). The defined green tokens are `--busy` (vivid), `--green-text` (soft),

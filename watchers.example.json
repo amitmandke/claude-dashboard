@@ -53,6 +53,49 @@
     },
 
     {
+      "//": "A GitHub review watcher: ask GitHub which PRs are waiting on YOUR review and stage each as a candidate. No token here \u2014 it speaks through the `gh` CLI you are already logged into. Use this instead of trying to read a review queue out of Slack: a channel subscribed to an org receives repo activity with no reviewer information, and the personally-addressed \"X requested your review\" notification is a DM a bot token cannot read.",
+      "name": "reviews",
+      "enabled": true,
+
+      "//trigger": "type 'github'. 'search' is a GitHub search query (default: review-requested:@me is:open is:pr) \u2014 narrow it per watcher, e.g. add org:myorg. 'login' is optional; blank means ask `gh` who you are. 'first' caps how many PRs one query returns (max 100).",
+      "trigger": {
+        "type": "github",
+        "search": "review-requested:@me is:open is:pr",
+        "login": "",
+
+        "//jiraProjects": "Issue-key prefixes that are REAL project keys. Multiple PRs on one story are grouped into a single candidate so they can be reviewed together, and the grouping signal is a shared key \u2014 so a stray standards id must never look like one. Without this list a built-in denylist (SHA, CVE, RFC, \u2026) is used instead; SHA-256 appearing in both a real PR body and a bot's release notes once chained an unrelated version bump into a genuine story.",
+        "jiraProjects": ["PROJ", "OPS"],
+
+        "//authors": "Set excludeAuthors OR includeAuthors, never both. Bots are excluded by default: the [bot] suffix, plus known logins that carry no suffix (GitHub reports Dependabot as plain 'dependabot' on dependency PRs). includeAuthors inverts the filter, which is how you run a SECOND watcher that batches exactly the bot PRs this one drops \u2014 with its own prompt and skill, no code change.",
+        "excludeAuthors": ["myorg-buildbot"],
+
+        "//skipDrafts": "Draft PRs are skipped by default.",
+        "skipDrafts": true,
+
+        "//maxGroupSize": "Cap PRs per story candidate, so one very widely-cited epic cannot collapse the queue into a single unreviewable item.",
+        "maxGroupSize": 5,
+
+        "//maxStagePerTick": "New candidates staged per poll. A first run against a long-standing queue fills gradually instead of dumping ~30 at once; the rest arrive on later ticks.",
+        "maxStagePerTick": 5
+      },
+
+      "//rules": "For a github watcher, rules map a DETECTED STACK to a review skill: name the rule after the stack. The stack comes from the repo's build file (go.mod \u2192 go, pom.xml/build.gradle \u2192 java), so no LLM is involved and this keeps working when the headless classifier does not. A story whose repos all resolve to one skill carries it; a genuinely mixed Go+Java story carries none and the prompt names them per repo.",
+      "rules": [
+        { "name": "java", "about": "a Java service", "action": { "type": "skill", "skill": "review-java" } },
+        { "name": "go", "about": "a Go service", "action": { "type": "skill", "skill": "review-go" } }
+      ],
+
+      "//poll": "The review queue moves on human timescales and costs one API call, so it polls far less often than a Slack channel. Default 900s.",
+      "poll": { "everySeconds": 900 },
+
+      "//prompt": "Optional prompt template. Placeholders: {story} {prs} {repos} {skills} {coherence}. Omit for the built-in light hand-off \u2014 which PRs, which story, which repo paths, which skill. Deliberately NOT a pre-solved brief: the review smarts belong in the skill, which runs fresh at launch.",
+      "prompt": "",
+
+      "//action.cwd": "Fallback folder when a PR's repo is not checked out locally, so the candidate is still launchable.",
+      "action": { "cwd": "/Users/me/codebase/scratch" }
+    },
+
+    {
       "//": "A scheduled prompt watcher: NOT RUN YET (schema + validation only — the runner executes 'slack' triggers today; see docs/proposals.md Proposal 6). It is reported in the Watchers tab as not-implemented rather than silently ignored.",
       "name": "morning-pr-sweep",
       "enabled": false,

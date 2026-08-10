@@ -27,6 +27,8 @@ const repos = require('./repos');
 const state = require('./state');
 const classifier = require('./classify');
 const match = require('./match');
+const reviews = require('./reviews');
+const gh = require('./gh');
 const watcherConfig = require('./config');
 
 const HISTORY_MAX_PAGES = 10;
@@ -34,6 +36,32 @@ const REPLIES_MAX_PAGES = 10;
 const DISCOVER_MAX_PAGES = 20;
 
 const DAY_MS = 86400000;
+
+// Pseudo-channel under which a github watcher's dedupe keys live in the shared
+// `seen` map, so they inherit its existing TTL pruning for free. A github watcher
+// has no real channels.
+const GH_SEEN_SCOPE = 'gh';
+
+/**
+ * Faults that mean "the network went away", not "this watcher is broken". A
+ * laptop that sleeps produces a steady trickle of these: launchd fires the poll
+ * timer inside a DarkWake window before WiFi/DNS is back, so DNS fails outright
+ * and sockets opened before sleep are dead on the other side. Measured over one
+ * run: 12 of 779 ticks, all self-healing on the following poll.
+ *
+ * They must not look like `invalid_auth` or `missing_scope`, which need you to go
+ * fix a token — showing both as the same red `error` makes the honest signal
+ * worthless.
+ */
+const TRANSIENT_ERROR_RE =
+  /ENOTFOUND|ECONNRESET|EPIPE|EADDRNOTAVAIL|ETIMEDOUT|ECONNREFUSED|ENETDOWN|ENETUNREACH|EHOSTUNREACH|socket hang up|HTTP 5\d\d/i;
+
+/** How many consecutive transient failures before we stop calling it weather. */
+const OFFLINE_ESCALATE_AFTER = 5;
+
+function isTransientError(message) {
+  return TRANSIENT_ERROR_RE.test(String(message || ''));
+}
 
 function log(line) {
   console.log(`[${new Date().toISOString()}] ${line}`);
@@ -403,6 +431,97 @@ async function runWatcherOnce(watcher, deps) {
   return { staged, scannedThreads, newMessages };
 }
 
+
+/**
+ * One pass of a `github` review watcher: ask GitHub for the PRs awaiting my
+ * review, decide (reviews.js), stage what is new.
+ *
+ * Deliberately has no classifier call. The skill comes from each repo's build
+ * file, so this producer keeps working when the headless `claude` binary does not
+ * — which is not hypothetical, it was broken for two days and degraded silently.
+ *
+ * Suppression lives in the shared `seen` map keyed by the *review-state* dedupe
+ * key (story + tip commits), so an unchanged PR stays quiet no matter what
+ * happened to its candidate, while a new commit produces a new key and resurfaces
+ * as a re-review.
+ */
+async function runGithubWatcherOnce(watcher, deps) {
+  const {
+    ghClient,
+    resolveRepo = () => null,
+    detectStack = repos.detectStack,
+    candidates = candidatesStore,
+    nowMs = Date.now(),
+    retention,
+  } = deps;
+
+  const name = watcher.name;
+  const login = watcher.login || (await ghClient.login());
+  const { total, prs } = await ghClient.reviewQueue({
+    login,
+    search: watcher.search,
+    first: watcher.first,
+  });
+
+  const skillsByStack = watcher.skillsByStack || {};
+  const plan = reviews.planCandidates(prs, {
+    excludeAuthors: watcher.excludeAuthors,
+    includeAuthors: watcher.includeAuthors,
+    skipDrafts: watcher.skipDrafts,
+    maxGroupSize: watcher.maxGroupSize,
+    maxStagePerTick: watcher.maxStagePerTick,
+    projects: watcher.projects,
+    template: watcher.template || undefined,
+    resolveRepo,
+    skillForRepo: (repo, dir) => skillsByStack[detectStack(dir)] || '',
+    isStaged: (key) => state.isSeen(name, GH_SEEN_SCOPE, key),
+    defaultCwd: watcher.defaultCwd,
+  });
+
+  let staged = 0;
+  for (const c of plan.candidates) {
+    try {
+      candidates.add({
+        cwd: c.cwd,
+        skill: c.skill,
+        prompt: c.prompt,
+        reason: c.reason,
+        priority: c.priority,
+        source: 'github',
+        producer: 'watcher',
+        // the card leads with the story or the PR ref rather than a bare "GitHub"
+        ref: { prRefs: c.prRefs, storyKey: c.storyKey, prUrl: c.url },
+        dedupeKey: c.dedupeKey,
+      });
+      state.markSeen(name, GH_SEEN_SCOPE, c.dedupeKey, null, nowMs);
+      staged++;
+      log(
+        `ACTION watcher-candidate name=${name} ` +
+        `${c.storyKey ? `story=${c.storyKey}` : `pr=${c.prRefs[0].repo}#${c.prRefs[0].number}`} ` +
+        `prs=${c.prRefs.length} skill=${c.skill || '-'} prio=${c.priority}`
+      );
+    } catch (e) {
+      log(`ERROR watcher name=${name} stage ${c.dedupeKey}: ${e.message}`);
+    }
+  }
+
+  log(
+    `ACTION watcher name=${name} note=reviewed queue=${total} eligible=${plan.selected} ` +
+    `groups=${plan.groups} staged=${staged} suppressed=${plan.suppressed}`
+  );
+
+  if (retention) {
+    state.prune(name, {
+      nowMs,
+      threadTtlMs: retention.threadTtlMs,
+      seenTtlMs: retention.seenTtlMs,
+      maxThreads: retention.maxThreads,
+    });
+  }
+  state.save();
+  return { staged, total, selected: plan.selected, groups: plan.groups, suppressed: plan.suppressed };
+}
+
 // ---- live scheduling (real dependencies) ----------------------------------
 //
 // One entry per configured watcher (running/paused/error/disabled) in a Map, so
@@ -415,8 +534,11 @@ let featureOn = false; // WATCHERS_ENABLED && a config file is present
 let deps = null; // built once at start(): slack client, repoMap, skillList, retention
 const runtime = new Map();
 // entry: { name, channels, everySeconds, trigger, state, lastPollAt, staged,
-//          lastError, watcher, timer, ticking }
-//   state ∈ 'running' | 'paused' | 'error' | 'disabled'
+//          lastError, lastErrorAt, lastErrorTransient, consecutiveFailures,
+//          watcher, timer, ticking }
+//   state ∈ 'running' | 'offline' | 'paused' | 'error' | 'disabled'
+//     offline = the network went away (sleeping laptop); self-heals, cursor
+//               makes the missed poll free. error = needs you (auth/scope/config)
 //   watcher = normalized cfg | null (null = config error, needs a file edit)
 //   timer   = interval handle | null
 
@@ -431,7 +553,9 @@ const runtime = new Map();
 let createClient = (token, { interactive = false } = {}) => slack.createClient({ token, interactive });
 
 let buildDeps = (cfg) => {
-  const client = createClient(cfg.token);
+  // A github-only config has no Slack token at all, and must still get deps —
+  // otherwise `tick` early-returns on `!deps` and the watcher never runs.
+  const client = cfg.token ? createClient(cfg.token) : null;
   // One client per bot token, built on demand: watchers can point at different
   // bots (`trigger.botRef`), and each must poll with its own token.
   const clients = new Map();
@@ -450,8 +574,11 @@ let buildDeps = (cfg) => {
     seenTtlMs: config.WATCHERS_SEEN_TTL_DAYS * DAY_MS,
     maxThreads: config.WATCHERS_MAX_THREADS,
   };
-  return { client, clientFor, repoMap, skillList, retention };
+  return { client, clientFor, repoMap, skillList, retention, ghClient: createGhClient() };
 };
+
+/** Reassignable for tests: the `gh` CLI wrapper (no subprocesses in tests). */
+let createGhClient = () => gh.createClient();
 
 let scheduleInterval = (fn, ms) => setInterval(fn, ms);
 
@@ -500,6 +627,16 @@ function entryFromDisabled(name, reason, prev) {
   };
 }
 
+/**
+ * Every RUNNABLE watcher, whatever its trigger. `normalize()` keeps the kinds in
+ * separate lists so the Slack poll loop can never be handed a trigger it cannot
+ * execute; the control surface (resume / reconcile / start-all) has the opposite
+ * need — it looks a watcher up by name and must find it regardless of kind.
+ */
+function runnableWatchers(cfg) {
+  return [...(cfg.watchers || []), ...(cfg.githubWatchers || [])];
+}
+
 function entryFromWatcher(w, state) {
   return {
     name: w.name,
@@ -512,6 +649,9 @@ function entryFromWatcher(w, state) {
     lastPollAt: null,
     staged: 0,
     lastError: null,
+    lastErrorAt: null,
+    lastErrorTransient: false,
+    consecutiveFailures: 0,
     watcher: w,
     timer: null,
   };
@@ -543,11 +683,20 @@ async function tick(entry) {
   }
   entry.ticking = true;
   try {
+    let r;
+    if (entry.watcher.type === 'github') {
+      r = await runGithubWatcherOnce(entry.watcher, {
+        ghClient: deps.ghClient,
+        resolveRepo: (rr) => deps.repoMap.resolve(rr),
+        retention: deps.retention,
+        nowMs: Date.now(),
+      });
+    } else {
     // poll with this watcher's own bot token when it has one (fake deps in tests
     // supply only `client`)
     const client =
       (deps.clientFor && entry.watcher.token && deps.clientFor(entry.watcher.token)) || deps.client;
-    const r = await runWatcherOnce(entry.watcher, {
+    r = await runWatcherOnce(entry.watcher, {
       client,
       resolveRepo: (rr) => deps.repoMap.resolve(rr),
       knownRepos: deps.repoMap.list(),
@@ -555,14 +704,28 @@ async function tick(entry) {
       retention: deps.retention,
       nowMs: Date.now(),
     });
+    }
     entry.lastPollAt = new Date().toISOString();
     entry.staged += r.staged;
+    entry.consecutiveFailures = 0;
+    // `lastError` is the CURRENT fault, so recovery clears it (and the ⚠ line);
+    // `lastErrorAt`/`lastErrorTransient` are history and survive recovery, so a
+    // flap that cleared before you looked at the card is still explainable.
     entry.lastError = null;
     if (entry.timer) entry.state = 'running'; // leave 'paused' for a Run-now on a paused watcher
   } catch (e) {
     log(`ERROR watcher name=${entry.name} tick: ${e.message}`);
     entry.lastError = e.message;
-    if (entry.timer) entry.state = 'error';
+    entry.lastErrorAt = new Date().toISOString();
+    entry.consecutiveFailures = (entry.consecutiveFailures || 0) + 1;
+    const transient = isTransientError(e.message);
+    entry.lastErrorTransient = transient;
+    if (entry.timer) {
+      // the cursor makes a missed poll free, so a network blip is 'offline', not
+      // a fault — escalate only if it stops looking like weather
+      entry.state =
+        transient && entry.consecutiveFailures < OFFLINE_ESCALATE_AFTER ? 'offline' : 'error';
+    }
   } finally {
     entry.ticking = false;
   }
@@ -581,16 +744,26 @@ function start() {
   featureOn = true;
   if (cfg.watchers.length && !cfg.token) {
     log('ERROR watcher: watchers.json has watchers but no usable bot token (set SLACK_BOT_TOKEN)');
-    featureOn = false;
-    return;
+    // a missing Slack token disables the slack watchers, not a github one
+    if (!cfg.githubWatchers.length) {
+      featureOn = false;
+      return;
+    }
+    cfg.watchers = [];
   }
-  if (cfg.token) deps = buildDeps(cfg);
+  deps = buildDeps(cfg);
 
   for (const w of cfg.watchers) {
     const e = entryFromWatcher(w, 'running');
     runtime.set(w.name, e);
     startTimer(e);
     log(`ACTION watcher name=${w.name} started channels=${w.channels.join(',')} every=${w.everySeconds}s`);
+  }
+  for (const w of cfg.githubWatchers || []) {
+    const e = entryFromWatcher(w, 'running');
+    runtime.set(w.name, e);
+    startTimer(e);
+    log(`ACTION watcher name=${w.name} started type=github search="${w.search}" every=${w.everySeconds}s`);
   }
   // surface everything the loop isn't running: `enabled:false` as a resumable
   // 'paused' entry, a schedule watcher or a config error as 'disabled' + reason
@@ -613,10 +786,10 @@ function resume(name) {
   const persisted = watcherConfig.setEnabled(name, true);
   const cfg = watcherConfig.load();
   noteConfigMeta(cfg);
-  const w = cfg.watchers.find((x) => x.name === name);
+  const w = runnableWatchers(cfg).find((x) => x.name === name);
   if (!w) return { ok: false, error: 'watcher not found or has a config error' };
   if (!deps) {
-    if (!cfg.token) return { ok: false, error: 'no usable Slack bot token' };
+    if (!cfg.token && w.type !== 'github') return { ok: false, error: 'no usable Slack bot token' };
     deps = buildDeps(cfg);
   }
   let e = runtime.get(name);
@@ -695,7 +868,7 @@ function reconcile(name) {
   const existing = runtime.get(name);
   if (existing) clearTimer(existing);
 
-  const w = cfg.watchers.find((x) => x.name === name);
+  const w = runnableWatchers(cfg).find((x) => x.name === name);
   if (!w) {
     const bad = cfg.disabled.find((d) => d.name === name);
     if (!bad) {
@@ -708,7 +881,7 @@ function reconcile(name) {
   }
 
   if (!deps) {
-    if (!cfg.token) {
+    if (!cfg.token && w.type !== 'github') {
       runtime.set(name, { ...entryFromWatcher(w, 'disabled'), lastError: 'no usable Slack bot token' });
       return { state: 'disabled', reason: 'no usable Slack bot token' };
     }
@@ -858,9 +1031,11 @@ function startAll() {
   for (const name of runtime.keys()) watcherConfig.setEnabled(name, true);
   const cfg = watcherConfig.load();
   noteConfigMeta(cfg);
-  if (cfg.watchers.length && !cfg.token) return { ok: false, error: 'no usable Slack bot token' };
-  if (!deps && cfg.token) deps = buildDeps(cfg);
-  for (const w of cfg.watchers) {
+  if (cfg.watchers.length && !cfg.token && !cfg.githubWatchers.length) {
+    return { ok: false, error: 'no usable Slack bot token' };
+  }
+  if (!deps) deps = buildDeps(cfg);
+  for (const w of runnableWatchers(cfg)) {
     let e = runtime.get(w.name);
     if (!e) {
       e = entryFromWatcher(w, 'running');
@@ -917,6 +1092,9 @@ function getStatus() {
       lastPollAt: e.lastPollAt,
       staged: e.staged,
       lastError: e.lastError,
+      // kept after recovery so a flap that cleared before you looked is explainable
+      lastErrorAt: e.lastErrorAt || null,
+      lastErrorTransient: !!e.lastErrorTransient,
     }))
       // config order, then name — deterministic across restarts, pauses, renames
       .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || a.name.localeCompare(b.name)),
@@ -938,6 +1116,7 @@ function _reset() {
  * only network callers outside the poll loop).
  */
 function _setTestHooks(hooks = {}) {
+  if (hooks.createGhClient) createGhClient = hooks.createGhClient;
   if (hooks.buildDeps) buildDeps = hooks.buildDeps;
   if (hooks.scheduleInterval) scheduleInterval = hooks.scheduleInterval;
   if (hooks.createClient) createClient = hooks.createClient;
@@ -961,6 +1140,8 @@ module.exports = {
   startAll,
   getStatus,
   runWatcherOnce,
+  runGithubWatcherOnce,
+  isTransientError,
   priorityFor,
   fetchHistory,
   fetchReplies,
