@@ -1053,6 +1053,8 @@ button.primary-btn:disabled, button.ghost-btn:disabled { opacity: .45; cursor: d
 .watch-state-running { color: var(--busy); background: var(--green-badge-bg); }
 .watch-state-paused { color: var(--dim); background: var(--inset); }
 .watch-state-error { color: var(--red-text); background: var(--red-badge-bg); }
+/* the network went away (sleeping laptop) — self-heals, so amber not red */
+.watch-state-offline { color: var(--amber-text); background: var(--amber-badge-bg); }
 
 /* liveness line — its own section, divided from the channels below */
 .watch-meta {

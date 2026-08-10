@@ -42,6 +42,27 @@ const DAY_MS = 86400000;
 // has no real channels.
 const GH_SEEN_SCOPE = 'gh';
 
+/**
+ * Faults that mean "the network went away", not "this watcher is broken". A
+ * laptop that sleeps produces a steady trickle of these: launchd fires the poll
+ * timer inside a DarkWake window before WiFi/DNS is back, so DNS fails outright
+ * and sockets opened before sleep are dead on the other side. Measured over one
+ * run: 12 of 779 ticks, all self-healing on the following poll.
+ *
+ * They must not look like `invalid_auth` or `missing_scope`, which need you to go
+ * fix a token — showing both as the same red `error` makes the honest signal
+ * worthless.
+ */
+const TRANSIENT_ERROR_RE =
+  /ENOTFOUND|ECONNRESET|EPIPE|EADDRNOTAVAIL|ETIMEDOUT|ECONNREFUSED|ENETDOWN|ENETUNREACH|EHOSTUNREACH|socket hang up|HTTP 5\d\d/i;
+
+/** How many consecutive transient failures before we stop calling it weather. */
+const OFFLINE_ESCALATE_AFTER = 5;
+
+function isTransientError(message) {
+  return TRANSIENT_ERROR_RE.test(String(message || ''));
+}
+
 function log(line) {
   console.log(`[${new Date().toISOString()}] ${line}`);
 }
@@ -513,8 +534,11 @@ let featureOn = false; // WATCHERS_ENABLED && a config file is present
 let deps = null; // built once at start(): slack client, repoMap, skillList, retention
 const runtime = new Map();
 // entry: { name, channels, everySeconds, trigger, state, lastPollAt, staged,
-//          lastError, watcher, timer, ticking }
-//   state ∈ 'running' | 'paused' | 'error' | 'disabled'
+//          lastError, lastErrorAt, lastErrorTransient, consecutiveFailures,
+//          watcher, timer, ticking }
+//   state ∈ 'running' | 'offline' | 'paused' | 'error' | 'disabled'
+//     offline = the network went away (sleeping laptop); self-heals, cursor
+//               makes the missed poll free. error = needs you (auth/scope/config)
 //   watcher = normalized cfg | null (null = config error, needs a file edit)
 //   timer   = interval handle | null
 
@@ -625,6 +649,9 @@ function entryFromWatcher(w, state) {
     lastPollAt: null,
     staged: 0,
     lastError: null,
+    lastErrorAt: null,
+    lastErrorTransient: false,
+    consecutiveFailures: 0,
     watcher: w,
     timer: null,
   };
@@ -680,12 +707,25 @@ async function tick(entry) {
     }
     entry.lastPollAt = new Date().toISOString();
     entry.staged += r.staged;
+    entry.consecutiveFailures = 0;
+    // `lastError` is the CURRENT fault, so recovery clears it (and the ⚠ line);
+    // `lastErrorAt`/`lastErrorTransient` are history and survive recovery, so a
+    // flap that cleared before you looked at the card is still explainable.
     entry.lastError = null;
     if (entry.timer) entry.state = 'running'; // leave 'paused' for a Run-now on a paused watcher
   } catch (e) {
     log(`ERROR watcher name=${entry.name} tick: ${e.message}`);
     entry.lastError = e.message;
-    if (entry.timer) entry.state = 'error';
+    entry.lastErrorAt = new Date().toISOString();
+    entry.consecutiveFailures = (entry.consecutiveFailures || 0) + 1;
+    const transient = isTransientError(e.message);
+    entry.lastErrorTransient = transient;
+    if (entry.timer) {
+      // the cursor makes a missed poll free, so a network blip is 'offline', not
+      // a fault — escalate only if it stops looking like weather
+      entry.state =
+        transient && entry.consecutiveFailures < OFFLINE_ESCALATE_AFTER ? 'offline' : 'error';
+    }
   } finally {
     entry.ticking = false;
   }
@@ -1052,6 +1092,9 @@ function getStatus() {
       lastPollAt: e.lastPollAt,
       staged: e.staged,
       lastError: e.lastError,
+      // kept after recovery so a flap that cleared before you looked is explainable
+      lastErrorAt: e.lastErrorAt || null,
+      lastErrorTransient: !!e.lastErrorTransient,
     }))
       // config order, then name — deterministic across restarts, pauses, renames
       .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || a.name.localeCompare(b.name)),
@@ -1098,6 +1141,7 @@ module.exports = {
   getStatus,
   runWatcherOnce,
   runGithubWatcherOnce,
+  isTransientError,
   priorityFor,
   fetchHistory,
   fetchReplies,

@@ -355,6 +355,13 @@ a function testable, export it (several are exported solely for tests, noted as 
   re-enable one) and are **never** reconciled against discovery — an id for a channel the bot has
   left stays excluded, so re-inviting the bot can't quietly resume it. When events land (proposals.md
   §8) exclusion must gate **event handling** too, or muted channels start producing candidates again.
+- **Watcher `offline` ≠ `error` — don't collapse them.** A sleeping laptop's DarkWake windows
+  produce transient DNS/socket failures every few polls; `tick` classifies those
+  (`isTransientError`) as amber `offline`, escalating to red `error` only after
+  `OFFLINE_ESCALATE_AFTER` consecutive failures, while auth/scope/config failures go red at
+  once. Recovery clears `lastError` but keeps `lastErrorAt`/`lastErrorTransient` — a flap that
+  healed before anyone looked must stay explainable. When adding a new failure path, route the
+  message through the same classification rather than setting `state='error'` directly.
 - **CSS colors: only use vars that are actually defined.** `--busy-text` and `--busy-badge-bg`
   do NOT exist (an undefined var silently falls back, rendering grey — this bit the "Running"
   badge and poll-age). The defined green tokens are `--busy` (vivid), `--green-text` (soft),

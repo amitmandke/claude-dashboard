@@ -537,8 +537,17 @@ inherited by the headless `claude -p` children), `@/abs/path` (a `chmod 600` fil
 structurally cannot post.
 
 **Runtime & controls.** Each configured watcher is one entry in a `Map` (state ∈
-`running`/`paused`/`error`/`disabled`), so one can be controlled without touching the others or
-the dashboard. The **Watchers tab** leads with liveness — a pulsing dot + a bright, relative
+`running`/`offline`/`paused`/`error`/`disabled`), so one can be controlled without touching the
+others or the dashboard. **`offline` is weather, `error` is a fault, and the split is the point**:
+a laptop that sleeps produces a steady trickle of transient network failures (DNS not yet up
+inside a DarkWake window, sockets dead on the other side after sleep — measured at 12 of 779
+ticks, all self-healing, since the cursor makes a missed poll free). Painting those the same red
+as `invalid_auth` would make the honest signal worthless, so a tick failing with a transient
+class (`ENOTFOUND`/`ECONNRESET`/`EPIPE`/timeouts/5xx) reads as amber `offline` and only escalates
+to `error` after several consecutive failures; an auth/scope/config failure is `error`
+immediately. Recovery clears `lastError` (the current-fault ⚠ line) but keeps
+`lastErrorAt`/`lastErrorTransient`, so a flap that healed before you looked at the card is still
+explainable. The **Watchers tab** leads with liveness — a pulsing dot + a bright, relative
 **`polled <ago>`** on the meta line (the honest "is it alive" signal; polling is uniform across a
 watcher's channels). Each watched channel is a row: friendly name over **`checked <ago>`**
 (recent, so it reads as live) or **`paused`**, with a per-channel **pause/resume** toggle and a

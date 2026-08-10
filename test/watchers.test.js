@@ -2136,3 +2136,88 @@ test('runGithubWatcherOnce: falls back to defaultCwd for a repo with no checkout
   assert.equal(added[0].cwd, '/fallback');
   assert.equal(added[0].skill, '', 'no stack detected -> no skill guessed');
 });
+
+// ---- offline vs error: transient network faults ---------------------------
+
+test('isTransientError: network weather yes, auth/config no', () => {
+  // the fault classes actually measured on a sleeping laptop (779-tick run)
+  for (const m of [
+    'getaddrinfo ENOTFOUND slack.com',
+    'read ECONNRESET',
+    'write EPIPE',
+    'read EADDRNOTAVAIL',
+    'socket hang up',
+    'slack conversations.replies: non-JSON response (HTTP 500)',
+    'connect ETIMEDOUT 1.2.3.4:443',
+  ]) {
+    assert.equal(loop.isTransientError(m), true, m);
+  }
+  for (const m of ['invalid_auth', 'missing_scope', 'account_inactive', 'gh CLI not found (gh)']) {
+    assert.equal(loop.isTransientError(m), false, m);
+  }
+});
+
+test('a transient tick failure reads offline (self-healing), a repeated one escalates, auth is error at once', async () => {
+  const cfgFile = wconfig.FILE;
+  process.env.WATCH_TEST_TOK = 'xoxb-test';
+  fs.writeFileSync(cfgFile, JSON.stringify({
+    slack: { botToken: '$WATCH_TEST_TOK' },
+    watchers: [{ name: 'mentions', enabled: true, channels: ['C1'],
+      trigger: { type: 'mention', users: ['U1'] }, intents: [], poll: { everySeconds: 120 } }],
+  }));
+  freshState();
+  loop._reset();
+
+  let fail = null; // null = succeed, else the message to throw
+  const flakyClient = {
+    history: async () => {
+      if (fail) throw new Error(fail);
+      return { messages: [], has_more: false };
+    },
+    replies: async () => ({ messages: [], has_more: false }),
+    permalink: async () => ({ permalink: '' }),
+    info: async () => ({ channel: { name: 'chan' } }),
+  };
+  loop._setTestHooks({
+    buildDeps: () => ({ client: flakyClient, repoMap: { resolve: () => null, list: () => [] },
+      skillList: [], retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 10 } }),
+    scheduleInterval: () => ({}),
+  });
+  loop.start();
+  const me = () => loop.getStatus().watchers.find((w) => w.name === 'mentions');
+  // start() fires an immediate un-awaited catch-up tick; drain it so runNow is
+  // never skipped by the single-flight guard (that skip is correct behaviour,
+  // but it would silently shift every assertion below by one pass)
+  await new Promise((r) => setTimeout(r, 20));
+  await loop.runNow('mentions'); // baseline pass so the cursor exists
+
+  // one DNS blip -> offline, not error; the message and its class are reported
+  fail = 'getaddrinfo ENOTFOUND slack.com';
+  await loop.runNow('mentions');
+  assert.equal(me().state, 'offline');
+  assert.equal(me().lastErrorTransient, true);
+  assert.match(me().lastError, /ENOTFOUND/);
+
+  // recovery clears the current fault but keeps the history
+  fail = null;
+  await loop.runNow('mentions');
+  assert.equal(me().state, 'running');
+  assert.equal(me().lastError, null);
+  assert.ok(me().lastErrorAt, 'the flap stays explainable after it healed');
+  assert.equal(me().lastErrorTransient, true);
+
+  // sustained network failure stops being weather
+  fail = 'read ECONNRESET';
+  for (let i = 0; i < 5; i++) await loop.runNow('mentions');
+  assert.equal(me().state, 'error', 'escalates after consecutive transient failures');
+
+  // an auth failure is never soft-pedaled
+  fail = null;
+  await loop.runNow('mentions'); // reset the streak
+  fail = 'invalid_auth';
+  await loop.runNow('mentions');
+  assert.equal(me().state, 'error');
+  assert.equal(me().lastErrorTransient, false);
+
+  loop.stop();
+});
