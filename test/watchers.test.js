@@ -2221,3 +2221,65 @@ test('a transient tick failure reads offline (self-healing), a repeated one esca
 
   loop.stop();
 });
+
+test('saveWatcher round-trips a github watcher, including an author-mode switch', () => {
+  const cfgFile = wconfig.FILE;
+  fs.writeFileSync(cfgFile, JSON.stringify({ version: 2, watchers: [] }));
+
+  // create — what the editor's Save sends for a new reviews watcher
+  const created = wconfig.saveWatcher(null, {
+    name: 'reviews',
+    trigger: {
+      type: 'github',
+      search: 'review-requested:@me is:open is:pr',
+      jiraProjects: ['ak'],
+      includeAuthors: [],
+      excludeAuthors: ['acme-buildbot'],
+      skipDrafts: true,
+      maxGroupSize: 5,
+      maxStagePerTick: 5,
+    },
+    rules: [
+      { name: 'java', about: 'a Java service', action: { type: 'skill', skill: 'review-java' } },
+      { name: 'go', about: 'a Go service', action: { type: 'skill', skill: 'review-go' } },
+    ],
+    poll: { everySeconds: 900 },
+    action: { cwd: '/tmp' },
+  });
+  assert.equal(created.ok, true, created.error);
+
+  let norm = wconfig.load(cfgFile, {});
+  assert.equal(norm.githubWatchers.length, 1);
+  assert.deepEqual(norm.githubWatchers[0].projects, ['AK'], 'projects uppercased');
+  assert.deepEqual(norm.githubWatchers[0].skillsByStack, { java: 'review-java', go: 'review-go' });
+
+  // edit — flip to an includeAuthors (bot-batch) watcher; the patch sends BOTH
+  // keys (inactive one empty) because the trigger merge is shallow
+  const flipped = wconfig.saveWatcher('reviews', {
+    name: 'reviews',
+    trigger: {
+      type: 'github',
+      search: 'review-requested:@me is:open is:pr',
+      jiraProjects: ['ak'],
+      includeAuthors: ['dependabot'],
+      excludeAuthors: [],
+      skipDrafts: true,
+      maxGroupSize: 5,
+      maxStagePerTick: 5,
+    },
+    rules: [],
+    poll: { everySeconds: 900 },
+    action: { cwd: '/tmp' },
+  });
+  assert.equal(flipped.ok, true, flipped.error);
+  norm = wconfig.load(cfgFile, {});
+  assert.deepEqual(norm.githubWatchers[0].includeAuthors, ['dependabot']);
+  assert.deepEqual(norm.githubWatchers[0].excludeAuthors, [], 'stale exclude list must not survive the switch');
+
+  // both lists set is refused at the door, fail-closed
+  const both = wconfig.saveWatcher('reviews', {
+    trigger: { type: 'github', includeAuthors: ['a'], excludeAuthors: ['b'] },
+  });
+  assert.equal(both.ok, false);
+  assert.match(both.error, /cannot set both/);
+});

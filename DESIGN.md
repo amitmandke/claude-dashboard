@@ -564,12 +564,21 @@ you fix it. A card's config-only details (rule count, and a schedule watcher's p
 which never reach the poll loop) come from a `configMeta` map refreshed wherever config is
 re-read — never per status call, which runs on every SSE tick.
 
-**Create / edit from the UI.** **＋ New watcher** opens a **step-0 type picker** — **Slack watcher**
-or **Generic watcher** (your own prompt on a cadence; `trigger.type: "schedule"` in config), with
-shell-command and HTTP shown as *soon* — then the editor with that type's stages. Both end with the
-**same final stage**, "where it runs & how often" (folder, then cadence), so what they share sits in
-the same place instead of one dialog leading with cadence and the other burying it: Slack = bot →
-channels → mentions + when→then rules → where/how-often; Generic = skill + prompt → where/how-often.
+**Create / edit from the UI.** **＋ New watcher** opens a **step-0 type picker** — **Slack watcher**,
+**GitHub reviews** (`trigger.type: "github"`), or **Generic watcher** (your own prompt on a cadence;
+`trigger.type: "schedule"` in config), with shell-command and HTTP shown as *soon* — then the editor
+with that type's stages. All end with the **same final stage**, "where it runs & how often" (folder,
+then cadence), so what they share sits in the same place instead of one dialog leading with cadence
+and the other burying it: Slack = bot → channels → mentions + when→then rules → where/how-often;
+GitHub = query → which PRs (story keys, author policy, caps) → stack→skill rules → where/how-often;
+Generic = skill + prompt → where/how-often. The GitHub form opens instantly — it makes no Slack
+calls, so nothing is deferred to `afterOpen`. Its author policy is a two-mode segment ("skip bots +
+these" / "only these") backed by one chip list; the save patch always sends **both** author keys
+(the inactive one empty) because `saveWatcher` merges the trigger shallowly — omitting the inactive
+key would leave a stale stored list behind a mode switch, which validation then rejects (the two
+lists are mutually exclusive). A new GitHub watcher seeds the two stack rules (`java`, `go`) with
+empty skills as an editable starting point. The watcher card shows the search query where a Slack
+card lists channels.
 Numeric fields are plain inputs (no spinner arrows) — bounds are enforced server-side. The dialog carries a live plain-language **summary** of what the watcher will do, a live
 per-rule sentence, and a **Raw JSON** toggle showing the exact patch that will be saved (editable,
 for anything the form doesn't cover — the escape hatch that keeps the form from being a ceiling).

@@ -1016,10 +1016,13 @@ function buildWatcher(w) {
   // a pulsing dot when the watcher is actively running — the at-a-glance "alive"
   card.querySelector('.watch-live').hidden = w.state !== 'running';
 
-  // a schedule watcher has no channels — it shows the prompt it will run instead
+  // a schedule watcher has no channels — it shows the prompt it will run; a
+  // github watcher shows the query it asks. Only slack watchers list channels.
+  const github = type === 'github';
   const body = card.querySelector('.watch-body');
-  body.hidden = !schedule;
+  body.hidden = !schedule && !github;
   if (schedule) card.querySelector('.watch-prompt').textContent = w.prompt || '(no prompt)';
+  else if (github) card.querySelector('.watch-prompt').textContent = w.search || 'review-requested:@me is:open is:pr';
   else renderWatchChannels(card.querySelector('.watch-channels'), w);
 
   // poll time is the real (uniform) liveness signal — lead with it, relative + bright
@@ -1497,6 +1500,33 @@ function wdPatch() {
       action: { cwd: wdPickerValue('wd-cwd2') },
     };
   }
+  if (wed.kind === 'github') {
+    const trigger = {
+      type: 'github',
+      search: wdEl('wd-gh-search').value.trim() || 'review-requested:@me is:open is:pr',
+      jiraProjects: wed.ghProjects,
+      skipDrafts: true,
+      maxGroupSize: parseInt(wdEl('wd-gh-group').value, 10) || 5,
+      maxStagePerTick: parseInt(wdEl('wd-gh-cap').value, 10) || 5,
+    };
+    // saveWatcher merges the trigger shallowly over what's stored, so BOTH author
+    // keys are always sent — the inactive one empty. Omitting it would leave a
+    // stale stored list behind a mode switch, which the backend rejects
+    // (includeAuthors and excludeAuthors cannot both be set).
+    trigger.includeAuthors = wed.ghAuthorMode === 'only' ? wed.ghAuthors : [];
+    trigger.excludeAuthors = wed.ghAuthorMode === 'only' ? [] : wed.ghAuthors;
+    return {
+      name,
+      trigger,
+      rules: wed.rules.map((r) => ({
+        name: r.name,
+        about: r.about,
+        action: { type: 'skill', skill: r.skill },
+      })),
+      poll: { everySeconds: parseInt(wdEl('wd-gh-poll').value, 10) || 900 },
+      action: { cwd: wdPickerValue('wd-cwd3') },
+    };
+  }
   return {
     name,
     trigger: {
@@ -1531,6 +1561,21 @@ function wdSummary() {
     return `Runs your prompt${as} as a session ${when}; it stages candidates and closes. ` +
       'Not executed yet — the runner still handles Slack triggers only.';
   }
+  if (wed.kind === 'github') {
+    const q = wdEl('wd-gh-search').value.trim() || 'review-requested:@me is:open is:pr';
+    const stories = wed.ghProjects.length
+      ? `PRs sharing a ${wed.ghProjects.map((k) => b(k)).join('/')} story key become one candidate`
+      : 'PRs sharing a story key become one candidate';
+    const authors = wed.ghAuthorMode === 'only'
+      ? `only PRs by ${wed.ghAuthors.length ? wed.ghAuthors.map((a) => b(a)).join(', ') : b('nobody yet')}`
+      : `bot authors${wed.ghAuthors.length ? ` and ${wed.ghAuthors.map((a) => b(a)).join(', ')}` : ''} skipped`;
+    const rules = wed.rules.length
+      ? `${b(wed.rules.length)} stack rule${wed.rules.length === 1 ? '' : 's'} pick the review skill`
+      : 'no stack rules yet — candidates launch without a skill';
+    return `Asks GitHub (as you, via ${b('gh')}) for ${b(q)}; ${authors}; ${stories}; ${rules}. ` +
+      `Polls every ${b((wdEl('wd-gh-poll').value || '900') + 's')}, staging at most ` +
+      `${b(wdEl('wd-gh-cap').value || '5')} new candidates per poll.`;
+  }
   const bot = wdEl('wd-bot');
   const botName = (bot.selectedOptions[0] && bot.selectedOptions[0].textContent) || 'a bot';
   const where = wed.chanMode === 'auto'
@@ -1542,6 +1587,10 @@ function wdSummary() {
     : 'with no rules, the classifier picks a skill itself';
   return `As ${b(botName)}, watch ${b(where)} for mentions of ${who}; ${rules}. ` +
     `Polls every ${b((wdEl('wd-poll').value || '120') + 's')}.`;
+}
+
+function wdRenderMentions() {
+  wdRenderChips('wd-mentions', wed.mentions, 'U01234ABCD', (v) => v.replace(/^<@|>$/g, ''));
 }
 
 function wdSync() {
@@ -1662,17 +1711,18 @@ function wdRuleCard(rule, i) {
 }
 
 function wdRenderRules() {
-  const box = wdEl('wd-rules');
+  const box = wdEl(wed.kind === 'github' ? 'wd-gh-rules' : 'wd-rules');
   box.textContent = '';
   wed.rules.forEach((r, i) => box.append(wdRuleCard(r, i)));
 }
 
-// ---- mention chips (trigger.mentions)
+// ---- chip lists (mentions / jira projects / authors)
 
-function wdRenderMentions() {
-  const box = wdEl('wd-mentions');
+/** A removable-chip list over `arr`, rendered into #id — mentions, projects, authors. */
+function wdRenderChips(id, arr, emptyPlaceholder, normalize = (v) => v) {
+  const box = wdEl(id);
   box.textContent = '';
-  wed.mentions.forEach((m, i) => {
+  arr.forEach((m, i) => {
     const chip = document.createElement('span');
     chip.className = 'chip';
     chip.textContent = m;
@@ -1680,21 +1730,21 @@ function wdRenderMentions() {
     x.type = 'button';
     x.textContent = '✕';
     x.title = 'Remove';
-    x.addEventListener('click', () => { wed.mentions.splice(i, 1); wdRenderMentions(); wdSync(); });
+    x.addEventListener('click', () => { arr.splice(i, 1); wdRenderChips(id, arr, emptyPlaceholder, normalize); wdSync(); });
     chip.append(x);
     box.append(chip);
   });
   const add = document.createElement('input');
   add.className = 'add';
-  add.placeholder = wed.mentions.length ? 'add…' : 'U01234ABCD';
+  add.placeholder = arr.length ? 'add…' : emptyPlaceholder;
   add.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ',') return;
     e.preventDefault();
-    const v = add.value.trim().replace(/^<@|>$/g, '');
-    if (v && !wed.mentions.includes(v)) wed.mentions.push(v);
-    wdRenderMentions();
+    const v = normalize(add.value.trim());
+    if (v && !arr.includes(v)) arr.push(v);
+    wdRenderChips(id, arr, emptyPlaceholder, normalize);
     wdSync();
-    wdEl('wd-mentions').querySelector('.add').focus();
+    wdEl(id).querySelector('.add').focus();
   });
   box.append(add);
 }
@@ -1810,8 +1860,10 @@ async function wdLoadBots(selected) {
 
 function wdSetKind(kind) {
   wed.kind = kind;
-  wdEl('wd-kind').textContent = kind === 'schedule' ? 'Generic' : 'Slack';
+  wdEl('wd-kind').textContent =
+    kind === 'schedule' ? 'Generic' : kind === 'github' ? 'GitHub reviews' : 'Slack';
   wdEl('wd-slack-stages').hidden = kind !== 'slack';
+  wdEl('wd-github-stages').hidden = kind !== 'github';
   wdEl('wd-schedule-stages').hidden = kind !== 'schedule';
 }
 
@@ -1826,6 +1878,11 @@ function wdSetChanMode(mode) {
     wed.channels = wed.live.map((c) => c.id);
   }
   wdRenderChannels();
+}
+
+function wdSetGhAuthorMode(mode) {
+  wed.ghAuthorMode = mode;
+  for (const b of wdEl('wd-gh-author-mode').children) b.classList.toggle('on', b.dataset.mode === mode);
 }
 
 function wdSetSchedMode(mode) {
@@ -1847,6 +1904,9 @@ async function openWatcherEditor(name, kind) {
   wed.editing = name || null;
   wed.rules = [];
   wed.mentions = [];
+  wed.ghProjects = [];
+  wed.ghAuthors = [];
+  wed.ghAuthorMode = 'exclude';
   wed.channels = [];
   wed.live = [];
   wed.liveError = '';
@@ -1891,7 +1951,33 @@ async function openWatcherEditor(name, kind) {
   wdEl('wd-name').value = raw.name || '';
 
   const action = raw.action || {};
-  if (wed.kind === 'schedule') {
+  if (wed.kind === 'github') {
+    wdEl('wd-gh-search').value = trigger.search || '';
+    wed.ghProjects = Array.isArray(trigger.jiraProjects) ? [...trigger.jiraProjects] : [];
+    const only = Array.isArray(trigger.includeAuthors) && trigger.includeAuthors.length > 0;
+    wed.ghAuthorMode = only ? 'only' : 'exclude';
+    wed.ghAuthors = [...((only ? trigger.includeAuthors : trigger.excludeAuthors) || [])];
+    wdSetGhAuthorMode(wed.ghAuthorMode);
+    wdEl('wd-gh-group').value = trigger.maxGroupSize || 5;
+    wdEl('wd-gh-cap').value = trigger.maxStagePerTick || 5;
+    wed.rules = (Array.isArray(raw.rules) ? raw.rules : []).map((r) => {
+      const a = (r && r.action) || {};
+      return { name: r.name || '', about: r.about || '', actionType: 'skill', skill: a.skill || '', prompt: '' };
+    });
+    if (!name && !wed.rules.length) {
+      // a new reviews watcher almost always wants the two stack rules — start
+      // from them (editable/removable) instead of an empty list
+      wed.rules = [
+        { name: 'java', about: 'a Java service', actionType: 'skill', skill: '', prompt: '' },
+        { name: 'go', about: 'a Go service', actionType: 'skill', skill: '', prompt: '' },
+      ];
+    }
+    wdEl('wd-gh-poll').value = (raw.poll && raw.poll.everySeconds) || 900;
+    wdFillPicker('wd-cwd3', wdFolderChoices('(none — pick it at launch)'), action.cwd);
+    wdRenderChips('wd-gh-projects', wed.ghProjects, 'AK', (v) => v.toUpperCase());
+    wdRenderChips('wd-gh-authors', wed.ghAuthors, 'a-buildbot', (v) => v.toLowerCase());
+    wdRenderRules();
+  } else if (wed.kind === 'schedule') {
     wdSetSchedMode(trigger.cron ? 'cron' : trigger.at ? 'daily' : 'every');
     wdEl('wd-every').value = trigger.everyMinutes || 60;
     wdEl('wd-at').value = trigger.at || '';
@@ -1999,16 +2085,21 @@ wdEl('wd-cancel').addEventListener('click', closeWatcherEditor);
 wdDialog.addEventListener('close', () => { watchEditOpen = false; });
 wdEl('watcher-form').addEventListener('submit', (e) => { e.preventDefault(); saveWatcher(); });
 wdEl('wd-delete').addEventListener('click', () => wed.editing && deleteWatcher(wed.editing));
-wdEl('wd-add-rule').addEventListener('click', () => {
-  wed.rules.push({ name: '', about: '', actionType: 'skill', skill: '', prompt: '' });
-  wdRenderRules();
-  wdSync();
-});
+for (const id of ['wd-add-rule', 'wd-gh-add-rule']) {
+  wdEl(id).addEventListener('click', () => {
+    wed.rules.push({ name: '', about: '', actionType: 'skill', skill: '', prompt: '' });
+    wdRenderRules();
+    wdSync();
+  });
+}
 for (const b of wdEl('wd-chan-mode').children) {
   b.addEventListener('click', () => { wdSetChanMode(b.dataset.mode); wdSync(); });
 }
 for (const b of wdEl('wd-sched-mode').children) {
   b.addEventListener('click', () => { wdSetSchedMode(b.dataset.mode); wdSync(); });
+}
+for (const b of wdEl('wd-gh-author-mode').children) {
+  b.addEventListener('click', () => { wdSetGhAuthorMode(b.dataset.mode); wdSync(); });
 }
 wdEl('wd-chan-filter').addEventListener('input', wdRenderChannels);
 wdEl('wd-chan-refresh').addEventListener('click', wdLoadChannels);
@@ -2079,11 +2170,11 @@ wdEl('wd-raw-toggle').addEventListener('click', () => {
   wdSync();
 });
 // every field feeds the live summary (and the raw view when it's open)
-for (const id of ['wd-name', 'wd-at', 'wd-cron', 'wd-prompt']) {
+for (const id of ['wd-name', 'wd-at', 'wd-cron', 'wd-prompt', 'wd-gh-search', 'wd-gh-group', 'wd-gh-cap']) {
   wdEl(id).addEventListener('input', wdSync);
 }
 wdEl('wd-sched-skill').addEventListener('change', wdSync);
-for (const id of ['wd-cwd', 'wd-cwd2']) {
+for (const id of ['wd-cwd', 'wd-cwd2', 'wd-cwd3']) {
   wdEl(id).addEventListener('change', () => {
     const other = wdEl(`${id}-other`);
     other.hidden = wdEl(id).value !== WD_OTHER;

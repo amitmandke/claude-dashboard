@@ -597,6 +597,7 @@ function noteConfigMeta(cfg) {
         // moves just because the runtime Map happened to be rebuilt differently
         order: i,
         type: w.type,
+        search: w.search || '',
         rules: (w.rules || []).length,
         prompt: w.prompt || '',
         skill: w.skill || '',
