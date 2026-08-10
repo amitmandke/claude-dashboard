@@ -360,15 +360,64 @@ immediate vs. queued-for-review.
 A **watcher** is one idea: a **trigger that produces candidates**. It never launches or posts
 anything — it only *produces* candidates you review. It runs inside the dashboard server
 process (started at boot), so it works whenever the machine is up, independent of whether a
-browser tab is open. Two trigger types exist in the schema:
+browser tab is open. Three trigger types exist in the schema:
 
 - **`slack`** — poll a bot's channels; a thread that **@-mentions you** and matches a rule
   stages a candidate. This is the implemented pipeline, described below.
+- **`github`** — ask GitHub which pull requests are awaiting **your** review and stage each as
+  a candidate. Implemented; described under *The GitHub review watcher* below.
 - **`schedule`** — run a saved prompt as an ephemeral session that finds work and stages
   candidates. The schema validates these and the Watchers tab reports them, but the runner
-  does **not** execute them yet: `config.normalize` hands the Slack poll loop only `slack`
-  watchers, so a trigger type nothing can run can never reach it. Design: `docs/proposals.md`
-  Proposal 6.
+  does **not** execute them yet: `config.normalize` keeps the runnable kinds in separate lists
+  so the Slack poll loop can never be handed a trigger it cannot execute. Design:
+  `docs/proposals.md` Proposal 6.
+
+#### The GitHub review watcher
+
+A review queue **cannot be read off Slack**, and that is a structural limit rather than a
+missing feature. A channel subscribed to an org receives repo *activity* (`Pull request opened
+by …`, commits pushed) carrying no reviewer information, so it cannot say which PRs are waiting
+on you; the one personally-addressed signal — *"X requested your review"* — is a GitHub **DM**,
+and a bot token's `im:history` reaches only DMs with the bot itself, never your DM with another
+app. Reading that would need a user token, which was evaluated and rejected. So this producer
+asks GitHub directly, through the `gh` CLI the user is already authenticated with: no token to
+store, no OAuth app, no new secret in config.
+
+`gh.js` fetches the whole queue in **one GraphQL call** — identity, body, draft state, author,
+tip commit, and your own last review — because the alternative is one subprocess per PR across a
+~50-PR queue. `reviews.js` then decides, as pure unit-tested logic:
+
+- **Selection.** GitHub's `review-requested:@me` does *not* exclude PRs you have already
+  reviewed, so that is filtered explicitly: never reviewed → include; reviewed but the tip
+  commit is newer than your review → include (the re-review case); reviewed with nothing new →
+  skip. Other reviewers are never consulted — someone else approving says nothing about whether
+  *your* review is outstanding. Drafts and bot authors are excluded by default, and
+  `includeAuthors` inverts the author filter so a second watcher can batch exactly the bot PRs
+  the first one drops, with no code change.
+- **Story grouping.** Multiple PRs on one story are reviewed better together, so PRs citing a
+  shared issue key become one candidate. Grouping is **key-centric, not transitive**: a group
+  *is* the set of PRs citing one key, which guarantees every multi-PR group can be named and
+  stops a chain (A–B share one key, B–C another) from fusing unrelated stories into a blob
+  nothing can title. Groups are capped so one widely-cited epic can't swallow the queue, and a
+  PR is claimed by exactly one group. Branch stacking is deliberately **not** a signal —
+  stepped PRs commonly all target `dev` because the author intends to rebase later.
+- **Skills, deterministically.** Each repo's stack comes from its build file (`go.mod` → go,
+  `pom.xml`/`build.gradle` → java) and maps to a review skill via the watcher's `rules`. No LLM
+  call, so this producer keeps working when the headless classifier does not. A story whose
+  repos all resolve to one skill carries it; a genuinely mixed Go+Java story carries none and
+  the prompt names the skill per repo rather than the card guessing one.
+- **Dedupe encodes review state.** The key is the story (or PR) plus each tip commit, so an
+  unchanged PR yields the key already on record and stays quiet whatever became of its
+  candidate, while a new commit yields a new key and resurfaces as a re-review. That is what
+  makes "skip what I've reviewed" and "show it again when it changes" a single rule instead of
+  two. Keys live in the shared `seen` map, inheriting its TTL pruning.
+- **Volume.** `maxStagePerTick` bounds new candidates per poll, so a first run against a
+  long-standing queue fills gradually over successive ticks instead of dumping thirty at once.
+
+The launch prompt is a **light hand-off** — which PRs, which story, which repo paths, which
+skill — and is template-overridable. It is deliberately not a pre-solved brief: the review
+smarts belong in the skill, which runs fresh at launch, and pre-baking them here would duplicate
+that work and go stale as the PR moves.
 
 **Configuration** lives in `~/.claude-dashboard/watchers.json` (local, git-ignored; the repo
 ships `watchers.example.json` with placeholders only), at **schema `version: 2`**. Validation
