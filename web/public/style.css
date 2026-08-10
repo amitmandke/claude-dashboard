@@ -1298,6 +1298,9 @@ button.primary-btn:disabled, button.ghost-btn:disabled { opacity: .45; cursor: d
 .wt-fields { display: flex; flex-direction: column; gap: 8px; }
 .cond { display: flex; align-items: center; gap: 8px; }
 .cond .k { font-size: 11.5px; color: var(--dim); flex: 0 0 auto; width: 82px; }
+/* compact numeric input (the per-story / per-poll caps) */
+.inp.num { width: 4.5em; text-align: center; display: inline-block; }
+
 .chips-inp {
   display: flex; flex-wrap: wrap; gap: 6px; align-items: center; flex: 1;
   background: var(--card); border: 1px solid var(--card-edge); border-radius: 9px; padding: 6px 8px;

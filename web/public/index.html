@@ -253,6 +253,11 @@
           <div class="t-dc">Runs a prompt of your own as a session on a cadence; it finds whatever
             you describe, stages candidates, then closes.</div>
         </button>
+        <button type="button" class="trig-opt" data-kind="github">
+          <div class="t-ic">⎇</div><div class="t-nm">GitHub reviews</div>
+          <div class="t-dc">Asks GitHub which PRs are waiting on your review (via your gh login);
+            each one — or each story — becomes a candidate.</div>
+        </button>
         <button type="button" class="trig-opt soon" disabled>
           <div class="t-ic">$_</div><div class="t-nm">On a shell command</div>
           <div class="t-dc">Run a command on a timer; its output becomes candidates.</div>
@@ -265,7 +270,7 @@
     </div>
   </dialog>
 
-  <!-- watcher editor: one dialog, two stage sets (Slack / Schedule). The Raw
+  <!-- watcher editor: one dialog, three stage sets (Slack / GitHub / Schedule). The Raw
        JSON view shows exactly the patch that will be saved. -->
   <dialog id="watcher-dialog" class="app-modal watcher-modal">
     <form id="watcher-form">
@@ -352,6 +357,85 @@
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- ---- GitHub stages ---- -->
+        <div id="wd-github-stages" hidden>
+          <div class="stage">
+            <span class="stage-no">1</span>
+            <div class="stage-title">Queue</div>
+            <div class="stage-hint">A GitHub search, asked as you through the <code>gh</code> CLI —
+              no token to store. Narrow it if you want, e.g. add <code>org:myorg</code>.</div>
+            <label class="lbl" for="wd-gh-search">Search</label>
+            <input id="wd-gh-search" class="inp path" autocomplete="off" spellcheck="false"
+              placeholder="review-requested:@me is:open is:pr">
+          </div>
+
+          <div class="stage">
+            <span class="stage-no">2</span>
+            <div class="stage-title">Which PRs</div>
+            <div class="stage-hint">Bot authors and drafts are skipped by default. PRs citing the
+              same story key are reviewed together as one candidate.</div>
+            <label class="lbl">Story keys — Jira projects</label>
+            <div class="chips-inp" id="wd-gh-projects"></div>
+            <span class="fld-hint">Key prefixes that are real projects (e.g. AK). Empty = a
+              built-in denylist keeps ids like SHA-256 from looking like stories.</span>
+            <label class="lbl">Authors</label>
+            <div class="seg" id="wd-gh-author-mode">
+              <button type="button" data-mode="exclude" class="on">Skip bots + these</button>
+              <button type="button" data-mode="only">Only these</button>
+            </div>
+            <div class="chips-inp" id="wd-gh-authors"></div>
+            <span class="fld-hint">“Only these” inverts the filter — how a second watcher batches
+              the dependency-bump PRs this one skips.</span>
+            <div class="poll-row">
+              <span class="lbl">Per story, at most</span>
+              <input id="wd-gh-group" class="inp num" inputmode="numeric" value="5"
+                autocomplete="off" aria-label="Max PRs per story"> <span class="fld-hint">PRs</span>
+              <span class="lbl">· per poll, stage</span>
+              <input id="wd-gh-cap" class="inp num" inputmode="numeric" value="5"
+                autocomplete="off" aria-label="Max candidates staged per poll"> <span class="fld-hint">new candidates</span>
+            </div>
+          </div>
+
+          <div class="stage">
+            <span class="stage-no">3</span>
+            <div class="stage-title">Stack → review skill</div>
+            <div class="stage-hint">The skill comes from each repo's build file — name a rule after
+              the stack it detects (<code>go</code> from go.mod, <code>java</code> from
+              pom.xml/gradle). No rule for a stack = that candidate launches without a skill.</div>
+            <div class="rules" id="wd-gh-rules"></div>
+            <button type="button" class="add-rule" id="wd-gh-add-rule">+ Add rule</button>
+          </div>
+
+          <div class="stage">
+            <span class="stage-no">4</span>
+            <div class="stage-title">Where it runs &amp; how often</div>
+            <div class="stage-hint">A candidate opens in the PR's local checkout; this is the
+              fallback when a repo isn't cloned here.</div>
+            <label class="lbl" for="wd-cwd3">If a repo isn't checked out, open in</label>
+            <select id="wd-cwd3" class="inp"></select>
+            <input id="wd-cwd3-other" class="inp path" hidden placeholder="/path/to/folder" autocomplete="off">
+            <div class="poll-row">
+              <span class="lbl">Poll every</span>
+              <div class="cadence" data-input="wd-gh-poll">
+                <div class="beats" role="group" aria-label="Poll interval">
+                  <button type="button" class="beat" data-value="300">5m</button>
+                  <button type="button" class="beat" data-value="900">15m</button>
+                  <button type="button" class="beat" data-value="1800">30m</button>
+                  <button type="button" class="beat" data-value="3600">1h</button>
+                  <button type="button" class="beat is-custom">Custom</button>
+                </div>
+                <div class="stepper" data-min="60" data-max="86400" data-step="60" hidden>
+                  <button type="button" class="step-dn" tabindex="-1" aria-label="Less often">−</button>
+                  <input id="wd-gh-poll" inputmode="numeric" value="900" autocomplete="off" aria-label="Poll interval in seconds">
+                  <span class="unit">sec</span>
+                  <button type="button" class="step-up" tabindex="-1" aria-label="More often">+</button>
+                </div>
+              </div>
+            </div>
+            <span class="fld-hint">The queue moves on human timescales — one API call per poll.</span>
           </div>
         </div>
 
