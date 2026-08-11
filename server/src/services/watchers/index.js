@@ -482,20 +482,26 @@ async function runGithubWatcherOnce(watcher, deps) {
   let staged = 0;
   for (const c of plan.candidates) {
     try {
-      // A digest supersedes its own previous pending card: the batch IS the
-      // queue, so when the queue changes the old snapshot is stale, and leaving
-      // it would show two overlapping "N PRs in one batch" cards. Only PENDING
-      // ones are replaced — a launched/dismissed digest is the user's history.
-      if (c.digest && typeof candidates.list === 'function' && typeof candidates.remove === 'function') {
+      // A fresh snapshot SUPERSEDES this watcher's stale pending cards for the
+      // same work. Two ways a pending card goes stale: the PR got new commits
+      // (new tip sha -> new dedupe key), or grouping shifted (a PR staged solo
+      // later joins a story, or a story's membership changes as the queue
+      // moves). Both left the old card behind, so one PR showed as two or three
+      // candidates (tps#5556 hit three). Any pending card of this watcher that
+      // shares a PR with the new one — or is a digest when the new one is a
+      // digest (the batch IS the queue, overlap or not) — is replaced. Only
+      // PENDING cards: a launched/dismissed one is the user's history, and its
+      // dedupe/seen key already stops it re-staging unchanged.
+      if (typeof candidates.list === 'function' && typeof candidates.remove === 'function') {
+        const newRefs = new Set(c.prRefs.map((r) => `${r.repo}#${r.number}`));
         for (const prev of candidates.list()) {
-          if (
-            prev.status === 'pending' &&
-            prev.source === 'github' &&
-            prev.ref && prev.ref.watcher === name && prev.ref.digest &&
-            prev.dedupeKey !== c.dedupeKey
-          ) {
+          if (prev.status !== 'pending' || prev.source !== 'github') continue;
+          if (!prev.ref || prev.ref.watcher !== name) continue;
+          if (prev.dedupeKey === c.dedupeKey) continue;
+          const overlaps = (prev.ref.prRefs || []).some((r) => newRefs.has(`${r.repo}#${r.number}`));
+          if (overlaps || (c.digest && prev.ref.digest)) {
             candidates.remove(prev.id);
-            log(`ACTION watcher name=${name} note=digest-superseded id=${prev.id}`);
+            log(`ACTION watcher name=${name} note=superseded id=${prev.id} by=${c.dedupeKey.slice(0, 60)}`);
           }
         }
       }

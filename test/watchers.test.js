@@ -2326,3 +2326,91 @@ test('digest watcher: a changed queue supersedes its own previous pending digest
   await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([bump(1, 'a1'), bump(4, 'd4')]) });
   assert.equal(store.items.length, 2, 'launched digest kept alongside the new pending one');
 });
+
+// ---- supersede: a fresh snapshot replaces stale pending cards --------------
+
+function memStore() {
+  let seq = 0;
+  const items = [];
+  return {
+    items,
+    add(c) { const it = { ...c, id: `c${++seq}`, status: 'pending' }; items.push(it); return it; },
+    list: () => items,
+    remove(id) { const i = items.findIndex((x) => x.id === id); if (i !== -1) items.splice(i, 1); },
+  };
+}
+
+test('supersede: a push replaces the stale pending card for the same PR (the tps#5556 case)', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([ghPr({ number: 5556, title: 'AK-1 x', tipOid: 'aaa1' })]) });
+  assert.equal(store.items.length, 1);
+
+  // author pushes twice more — each pass must leave exactly ONE pending card
+  for (const tip of ['bbb2', 'ccc3']) {
+    await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([ghPr({ number: 5556, title: 'AK-1 x', tipOid: tip })]) });
+    assert.equal(store.items.length, 1, `tip ${tip}: no stale duplicates`);
+  }
+  assert.match(store.items[0].dedupeKey, /@ccc3/);
+});
+
+test('supersede: a solo card is replaced when its PR joins a story group', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([ghPr({ number: 1, title: 'AK-10 a', body: 'AK-99' })]) });
+  assert.equal(store.items.length, 1);
+  assert.equal(store.items[0].ref.prRefs.length, 1);
+
+  // a second PR citing the same epic arrives -> the pair stages as one story,
+  // and the old solo card for PR 1 goes with it
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([
+    ghPr({ number: 1, title: 'AK-10 a', body: 'AK-99' }),
+    ghPr({ number: 2, title: 'AK-11 b', body: 'AK-99', tipOid: 'ddd4' }),
+  ]) });
+  assert.equal(store.items.length, 1, 'solo card superseded by the story card');
+  assert.equal(store.items[0].ref.storyKey, 'AK-99');
+  assert.equal(store.items[0].ref.prRefs.length, 2);
+});
+
+test('supersede: launched and dismissed cards are history — never removed', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([ghPr({ number: 2274, title: 'AK-2 y', tipOid: 'aaa1' })]) });
+  store.items[0].status = 'dismissed'; // user dismissed it
+
+  // new commits -> the re-review stages; the dismissed card stays as history
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([
+    ghPr({ number: 2274, title: 'AK-2 y', tipOid: 'bbb2', myLastReviewAt: '2026-08-10T00:00:00Z', tipCommittedDate: '2026-08-11T00:00:00Z' }),
+  ]) });
+  assert.equal(store.items.length, 2);
+  assert.deepEqual(store.items.map((x) => x.status).sort(), ['dismissed', 'pending']);
+});
+
+test("supersede: another watcher's pending cards are untouched", async () => {
+  state._reset();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+  const w1 = ghW();
+  const w2 = ghW();
+  await loop.runGithubWatcherOnce(w1, { ...base, ghClient: ghStub([ghPr({ number: 7, title: 'AK-7 z', tipOid: 'aaa1' })]) });
+  await loop.runGithubWatcherOnce(w2, { ...base, ghClient: ghStub([ghPr({ number: 7, title: 'AK-7 z', tipOid: 'bbb2' })]) });
+  assert.equal(store.items.length, 2, 'watchers own their cards; no cross-watcher removal');
+});
