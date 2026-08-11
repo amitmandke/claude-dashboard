@@ -387,8 +387,12 @@ store, no OAuth app, no new secret in config.
 tip commit, and your own last review — because the alternative is one subprocess per PR across a
 ~50-PR queue. `reviews.js` then decides, as pure unit-tested logic:
 
-- **Selection.** GitHub's `review-requested:@me` does *not* exclude PRs you have already
-  reviewed, so that is filtered explicitly: never reviewed → include; reviewed but the tip
+- **Selection.** Two searches feed one queue. `review-requested:@me` covers fresh asks — but
+  GitHub *removes* you from requested reviewers the moment you submit any review, so a PR you
+  commented on vanishes from that search exactly when the author's next push should bring it
+  back. A second query (`reviewed-by:@me`, derived from the configured search by substitution so
+  org-filters carry over; disable with `reReviews: false`) supplies those, deduped by
+  `repo#number`. The same rule then filters both: never reviewed → include; reviewed but the tip
   commit is newer than your review → include (the re-review case); reviewed with nothing new →
   skip. Other reviewers are never consulted — someone else approving says nothing about whether
   *your* review is outstanding. Drafts and bot authors are excluded by default, and

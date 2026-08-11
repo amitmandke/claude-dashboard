@@ -2414,3 +2414,92 @@ test("supersede: another watcher's pending cards are untouched", async () => {
   await loop.runGithubWatcherOnce(w2, { ...base, ghClient: ghStub([ghPr({ number: 7, title: 'AK-7 z', tipOid: 'bbb2' })]) });
   assert.equal(store.items.length, 2, 'watchers own their cards; no cross-watcher removal');
 });
+
+// ---- re-reviews via the reviewed-by query ----------------------------------
+
+test('re-review: a PR I commented on (dropped from review-requested) resurfaces on a push', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  // the orchestrator#2274 shape: submitting a review removed me from requested
+  // reviewers, so the PR appears ONLY in the reviewed-by query; the author then
+  // pushed past my last review.
+  const moved = ghPr({
+    number: 2274, title: 'AK-2 y', tipOid: '24488e0',
+    myLastReviewAt: '2026-08-11T18:41:47Z', tipCommittedDate: '2026-08-11T19:11:04Z',
+  });
+  const calls = [];
+  const client = {
+    async login() { return 'me'; },
+    async reviewQueue({ search }) {
+      calls.push(search);
+      if (search.startsWith('review-requested:@me')) return { total: 0, prs: [] };
+      return { total: 1, prs: [moved] };
+    },
+  };
+  const r = await loop.runGithubWatcherOnce(w, {
+    ghClient: client,
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  assert.deepEqual(calls, ['review-requested:@me is:open is:pr', 'reviewed-by:@me is:open is:pr']);
+  assert.equal(r.staged, 1);
+  assert.equal(store.items[0].priority, 2, 'a re-review outranks fresh asks');
+});
+
+test('re-review: a PR I reviewed with NO new commits stays invisible', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const unchanged = ghPr({
+    number: 9, myLastReviewAt: '2026-08-11T18:00:00Z', tipCommittedDate: '2026-08-11T17:00:00Z',
+  });
+  const client = {
+    async login() { return 'me'; },
+    async reviewQueue({ search }) {
+      return search.startsWith('reviewed-by') ? { total: 1, prs: [unchanged] } : { total: 0, prs: [] };
+    },
+  };
+  const r = await loop.runGithubWatcherOnce(w, {
+    ghClient: client,
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  assert.equal(r.staged, 0);
+});
+
+test('re-review: a PR in BOTH queries stages once', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const both = ghPr({ number: 5, title: 'AK-5 z' });
+  const client = {
+    async login() { return 'me'; },
+    async reviewQueue() { return { total: 1, prs: [both] }; },
+  };
+  const r = await loop.runGithubWatcherOnce(w, {
+    ghClient: client,
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  });
+  assert.equal(r.staged, 1, 'deduped across the two queries');
+});
+
+test('re-review: reReviews:false or a custom search without review-requested runs one query', async () => {
+  state._reset();
+  const store = memStore();
+  const calls = [];
+  const client = {
+    async login() { return 'me'; },
+    async reviewQueue({ search }) { calls.push(search); return { total: 0, prs: [] }; },
+  };
+  const base = {
+    ghClient: client, resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+  await loop.runGithubWatcherOnce(ghW({ reReviews: false }), base);
+  assert.equal(calls.length, 1);
+  calls.length = 0;
+  await loop.runGithubWatcherOnce(ghW({ search: 'is:open is:pr label:urgent' }), base);
+  assert.equal(calls.length, 1, 'nothing to substitute -> no second query');
+});
