@@ -1508,6 +1508,7 @@ function wdPatch() {
       skipDrafts: true,
       maxGroupSize: parseInt(wdEl('wd-gh-group').value, 10) || 5,
       maxStagePerTick: parseInt(wdEl('wd-gh-cap').value, 10) || 5,
+      group: wed.ghGroupMode,
     };
     // saveWatcher merges the trigger shallowly over what's stored, so BOTH author
     // keys are always sent — the inactive one empty. Omitting it would leave a
@@ -1524,6 +1525,7 @@ function wdPatch() {
         action: { type: 'skill', skill: r.skill },
       })),
       poll: { everySeconds: parseInt(wdEl('wd-gh-poll').value, 10) || 900 },
+      prompt: wdEl('wd-gh-prompt').value.trim(),
       action: { cwd: wdPickerValue('wd-cwd3') },
     };
   }
@@ -1563,9 +1565,11 @@ function wdSummary() {
   }
   if (wed.kind === 'github') {
     const q = wdEl('wd-gh-search').value.trim() || 'review-requested:@me is:open is:pr';
-    const stories = wed.ghProjects.length
-      ? `PRs sharing a ${wed.ghProjects.map((k) => b(k)).join('/')} story key become one candidate`
-      : 'PRs sharing a story key become one candidate';
+    const stories = wed.ghGroupMode === 'all'
+      ? 'everything selected folds into ONE batch card'
+      : wed.ghProjects.length
+        ? `PRs sharing a ${wed.ghProjects.map((k) => b(k)).join('/')} story key become one candidate`
+        : 'PRs sharing a story key become one candidate';
     const authors = wed.ghAuthorMode === 'only'
       ? `only PRs by ${wed.ghAuthors.length ? wed.ghAuthors.map((a) => b(a)).join(', ') : b('nobody yet')}`
       : `bot authors${wed.ghAuthors.length ? ` and ${wed.ghAuthors.map((a) => b(a)).join(', ')}` : ''} skipped`;
@@ -1885,6 +1889,11 @@ function wdSetGhAuthorMode(mode) {
   for (const b of wdEl('wd-gh-author-mode').children) b.classList.toggle('on', b.dataset.mode === mode);
 }
 
+function wdSetGhGroupMode(mode) {
+  wed.ghGroupMode = mode;
+  for (const b of wdEl('wd-gh-group-mode').children) b.classList.toggle('on', b.dataset.mode === mode);
+}
+
 function wdSetSchedMode(mode) {
   wed.schedMode = mode;
   for (const b of wdEl('wd-sched-mode').children) b.classList.toggle('on', b.dataset.mode === mode);
@@ -1907,6 +1916,7 @@ async function openWatcherEditor(name, kind) {
   wed.ghProjects = [];
   wed.ghAuthors = [];
   wed.ghAuthorMode = 'exclude';
+  wed.ghGroupMode = 'story';
   wed.channels = [];
   wed.live = [];
   wed.liveError = '';
@@ -1958,6 +1968,8 @@ async function openWatcherEditor(name, kind) {
     wed.ghAuthorMode = only ? 'only' : 'exclude';
     wed.ghAuthors = [...((only ? trigger.includeAuthors : trigger.excludeAuthors) || [])];
     wdSetGhAuthorMode(wed.ghAuthorMode);
+    wdSetGhGroupMode(trigger.group === 'all' ? 'all' : 'story');
+    wdEl('wd-gh-prompt').value = raw.prompt || '';
     wdEl('wd-gh-group').value = trigger.maxGroupSize || 5;
     wdEl('wd-gh-cap').value = trigger.maxStagePerTick || 5;
     wed.rules = (Array.isArray(raw.rules) ? raw.rules : []).map((r) => {
@@ -2101,6 +2113,9 @@ for (const b of wdEl('wd-sched-mode').children) {
 for (const b of wdEl('wd-gh-author-mode').children) {
   b.addEventListener('click', () => { wdSetGhAuthorMode(b.dataset.mode); wdSync(); });
 }
+for (const b of wdEl('wd-gh-group-mode').children) {
+  b.addEventListener('click', () => { wdSetGhGroupMode(b.dataset.mode); wdSync(); });
+}
 wdEl('wd-chan-filter').addEventListener('input', wdRenderChannels);
 wdEl('wd-chan-refresh').addEventListener('click', wdLoadChannels);
 // cadence controls: preset beats + a numeric stepper for a custom value. A beat
@@ -2170,7 +2185,7 @@ wdEl('wd-raw-toggle').addEventListener('click', () => {
   wdSync();
 });
 // every field feeds the live summary (and the raw view when it's open)
-for (const id of ['wd-name', 'wd-at', 'wd-cron', 'wd-prompt', 'wd-gh-search', 'wd-gh-group', 'wd-gh-cap']) {
+for (const id of ['wd-name', 'wd-at', 'wd-cron', 'wd-prompt', 'wd-gh-search', 'wd-gh-group', 'wd-gh-cap', 'wd-gh-prompt']) {
   wdEl(id).addEventListener('input', wdSync);
 }
 wdEl('wd-sched-skill').addEventListener('change', wdSync);

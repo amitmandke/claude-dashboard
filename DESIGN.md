@@ -411,6 +411,14 @@ tip commit, and your own last review — because the alternative is one subproce
   candidate, while a new commit yields a new key and resurfaces as a re-review. That is what
   makes "skip what I've reviewed" and "show it again when it changes" a single rule instead of
   two. Keys live in the shared `seen` map, inheriting its TTL pruning.
+- **Two grouping modes.** `group: "story"` (default) is the human-review shape above.
+  `group: "all"` folds the entire selection into **one digest candidate** — built for a second,
+  bot-only watcher (`includeAuthors: ["dependabot", …]`): dependency bumps share no story key, so
+  story grouping would hand back one card per bump, defeating the batch. A digest **supersedes its
+  own previous pending card** when the queue changes (the batch *is* the queue, so the old snapshot
+  is stale; launched/dismissed digests are history and kept), always carries priority 0 (routine
+  work never outranks real reviews), and its coherence note says "review each on its own merits"
+  rather than the one-story line.
 - **Volume.** `maxStagePerTick` bounds new candidates per poll, so a first run against a
   long-standing queue fills gradually over successive ticks instead of dumping thirty at once.
 
@@ -570,7 +578,9 @@ re-read — never per status call, which runs on every SSE tick.
 with that type's stages. All end with the **same final stage**, "where it runs & how often" (folder,
 then cadence), so what they share sits in the same place instead of one dialog leading with cadence
 and the other burying it: Slack = bot → channels → mentions + when→then rules → where/how-often;
-GitHub = query → which PRs (story keys, author policy, caps) → stack→skill rules → where/how-often;
+GitHub = query → which PRs (story keys, grouping mode, author policy, caps) → stack→skill rules →
+where/how-often + an optional **prompt template** textarea (placeholders `{prs}` `{story}` `{repos}`
+`{skills}` `{coherence}`; empty = the built-in hand-off);
 Generic = skill + prompt → where/how-often. The GitHub form opens instantly — it makes no Slack
 calls, so nothing is deferred to `afterOpen`. Its author policy is a two-mode segment ("skip bots +
 these" / "only these") backed by one chip list; the save patch always sends **both** author keys

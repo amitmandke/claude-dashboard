@@ -2283,3 +2283,46 @@ test('saveWatcher round-trips a github watcher, including an author-mode switch'
   assert.equal(both.ok, false);
   assert.match(both.error, /cannot set both/);
 });
+
+test('digest watcher: a changed queue supersedes its own previous pending digest', async () => {
+  state._reset();
+  const w = ghW({ group: 'all', includeAuthors: ['dependabot'] });
+  const store = (() => {
+    let seq = 0;
+    const items = [];
+    return {
+      items,
+      add(c) { const it = { ...c, id: `c${++seq}`, status: 'pending' }; items.push(it); return it; },
+      list: () => items,
+      remove(id) { const i = items.findIndex((x) => x.id === id); if (i !== -1) items.splice(i, 1); },
+    };
+  })();
+  const base = {
+    resolveRepo: () => '/c/x',
+    detectStack: () => 'java',
+    candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+  const bump = (n, oid) => ghPr({ number: n, author: 'dependabot', title: `Bump thing ${n}`, tipOid: oid });
+
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([bump(1, 'a1'), bump(2, 'b2')]) });
+  assert.equal(store.items.length, 1);
+  const firstId = store.items[0].id;
+  assert.equal(store.items[0].ref.digest, true);
+
+  // a third bump arrives -> new digest replaces the stale pending one
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([bump(1, 'a1'), bump(2, 'b2'), bump(3, 'c3')]) });
+  assert.equal(store.items.length, 1, 'no overlapping batch cards');
+  assert.notEqual(store.items[0].id, firstId);
+  assert.equal(store.items[0].ref.prRefs.length, 3);
+
+  // unchanged queue -> nothing staged, the digest is not endlessly rewritten
+  const r3 = await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([bump(1, 'a1'), bump(2, 'b2'), bump(3, 'c3')]) });
+  assert.equal(r3.staged, 0);
+  assert.equal(store.items.length, 1);
+
+  // a LAUNCHED digest is history — a new queue must not delete it
+  store.items[0].status = 'launched';
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStub([bump(1, 'a1'), bump(4, 'd4')]) });
+  assert.equal(store.items.length, 2, 'launched digest kept alongside the new pending one');
+});
