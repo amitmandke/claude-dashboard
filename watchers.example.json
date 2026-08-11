@@ -78,6 +78,9 @@
         "//maxStagePerTick": "New candidates staged per poll. A first run against a long-standing queue fills gradually instead of dumping ~30 at once; the rest arrive on later ticks.",
         "maxStagePerTick": 5,
 
+        "//reReviews": "On by default: a second reviewed-by:@me query (derived from 'search' by substitution) catches PRs that left review-requested when you submitted a review, staging them again when the author pushes past your last review. Set false to only see fresh requests.",
+        "reReviews": true,
+
         "//group": "'story' (default): PRs sharing an issue key become one candidate. 'all': the ENTIRE selection folds into one digest candidate \u2014 pair with includeAuthors for a bot-PR watcher that batches every dependency bump into a single card; a changed queue supersedes the previous pending digest.",
         "group": "story"
       },

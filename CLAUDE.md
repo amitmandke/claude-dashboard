@@ -165,8 +165,10 @@ a function testable, export it (several are exported solely for tests, noted as 
   token structurally cannot read (`im:history` covers only DMs with the bot itself; a user token
   was rejected). The `github` watcher (`gh.js` + `reviews.js`) asks GitHub directly through the
   user's own `gh` login. Non-obvious things that bit during the build, all covered by tests:
-  **(a)** `review-requested:@me` does NOT exclude PRs you already reviewed, so the
-  reviewed-vs-tip-commit comparison is mandatory, not an optimization; **(b)** grouping must be
+  **(a)** `review-requested:@me` does NOT exclude PRs you already reviewed, AND submitting any
+  review silently drops the PR from that search — so the watcher must run a second
+  `reviewed-by:@me` query for re-reviews, and the reviewed-vs-tip-commit comparison is mandatory
+  on both; **(b)** grouping must be
   key-centric, never transitive — a chain fused five unrelated PRs into one group nothing could
   name; **(c)** `SHA-256` matches a Jira-key regex, and that one coincidence chained a Dependabot
   bump into a real story, hence `jiraProjects` / the standards denylist; **(d)** GitHub reports

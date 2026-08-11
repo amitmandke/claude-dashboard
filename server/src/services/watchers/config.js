@@ -288,6 +288,11 @@ function normalizeGithubTrigger(t) {
     excludeAuthors,
     includeAuthors,
     skipDrafts: t.skipDrafts === undefined ? true : !!t.skipDrafts,
+    // Submitting ANY review removes you from GitHub's requested reviewers, so a
+    // PR you commented on vanishes from `review-requested:@me` — exactly when the
+    // author's next push should bring it back. On by default: the re-review
+    // requirement is the point of this watcher, not an option bolted onto it.
+    reReviews: t.reReviews === undefined ? true : !!t.reReviews,
     group,
     first: Number.isFinite(first) && first > 0 ? Math.min(first, 100) : 50,
     maxGroupSize: Number.isFinite(maxGroupSize) && maxGroupSize > 0 ? maxGroupSize : 5,

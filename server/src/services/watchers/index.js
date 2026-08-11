@@ -457,11 +457,32 @@ async function runGithubWatcherOnce(watcher, deps) {
 
   const name = watcher.name;
   const login = watcher.login || (await ghClient.login());
-  const { total, prs } = await ghClient.reviewQueue({
-    login,
-    search: watcher.search,
-    first: watcher.first,
-  });
+
+  // Two queries, one queue. `review-requested:@me` covers fresh asks — but
+  // GitHub REMOVES you from requested reviewers the moment you submit any
+  // review, so a PR you commented on vanishes from that search exactly when the
+  // author's next push should resurface it (orchestrator#2274, live). The
+  // second query asks for PRs you have reviewed; the tip-newer-than-my-review
+  // rule in reviews.js then keeps only the ones that actually moved. Derived by
+  // substitution so a customized search (org: filters etc.) carries over.
+  const searches = [watcher.search];
+  const reviewedBy = watcher.search.replace('review-requested:@me', 'reviewed-by:@me');
+  if (watcher.reReviews !== false && reviewedBy !== watcher.search) searches.push(reviewedBy);
+
+  const seen = new Set();
+  const prs = [];
+  let total = 0;
+  for (const [i, search] of searches.entries()) {
+    const r = await ghClient.reviewQueue({ login, search, first: watcher.first });
+    if (i === 0) total = r.total; // the primary queue's own size
+    for (const pr of r.prs) {
+      const key = `${pr.repo}#${pr.number}`;
+      if (seen.has(key)) continue; // in both queries (e.g. review re-requested)
+      seen.add(key);
+      prs.push(pr);
+      if (i > 0) total++; // re-review PRs the primary queue doesn't contain
+    }
+  }
 
   const skillsByStack = watcher.skillsByStack || {};
   const plan = reviews.planCandidates(prs, {
