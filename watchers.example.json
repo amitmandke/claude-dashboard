@@ -76,7 +76,10 @@
         "maxGroupSize": 5,
 
         "//maxStagePerTick": "New candidates staged per poll. A first run against a long-standing queue fills gradually instead of dumping ~30 at once; the rest arrive on later ticks.",
-        "maxStagePerTick": 5
+        "maxStagePerTick": 5,
+
+        "//group": "'story' (default): PRs sharing an issue key become one candidate. 'all': the ENTIRE selection folds into one digest candidate \u2014 pair with includeAuthors for a bot-PR watcher that batches every dependency bump into a single card; a changed queue supersedes the previous pending digest.",
+        "group": "story"
       },
 
       "//rules": "For a github watcher, rules map a DETECTED STACK to a review skill: name the rule after the stack. The stack comes from the repo's build file (go.mod \u2192 go, pom.xml/build.gradle \u2192 java), so no LLM is involved and this keeps working when the headless classifier does not. A story whose repos all resolve to one skill carries it; a genuinely mixed Go+Java story carries none and the prompt names them per repo.",

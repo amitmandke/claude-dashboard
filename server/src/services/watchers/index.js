@@ -471,6 +471,7 @@ async function runGithubWatcherOnce(watcher, deps) {
     maxGroupSize: watcher.maxGroupSize,
     maxStagePerTick: watcher.maxStagePerTick,
     projects: watcher.projects,
+    groupMode: watcher.group || 'story',
     template: watcher.template || undefined,
     resolveRepo,
     skillForRepo: (repo, dir) => skillsByStack[detectStack(dir)] || '',
@@ -481,6 +482,23 @@ async function runGithubWatcherOnce(watcher, deps) {
   let staged = 0;
   for (const c of plan.candidates) {
     try {
+      // A digest supersedes its own previous pending card: the batch IS the
+      // queue, so when the queue changes the old snapshot is stale, and leaving
+      // it would show two overlapping "N PRs in one batch" cards. Only PENDING
+      // ones are replaced — a launched/dismissed digest is the user's history.
+      if (c.digest && typeof candidates.list === 'function' && typeof candidates.remove === 'function') {
+        for (const prev of candidates.list()) {
+          if (
+            prev.status === 'pending' &&
+            prev.source === 'github' &&
+            prev.ref && prev.ref.watcher === name && prev.ref.digest &&
+            prev.dedupeKey !== c.dedupeKey
+          ) {
+            candidates.remove(prev.id);
+            log(`ACTION watcher name=${name} note=digest-superseded id=${prev.id}`);
+          }
+        }
+      }
       candidates.add({
         cwd: c.cwd,
         skill: c.skill,
@@ -490,14 +508,14 @@ async function runGithubWatcherOnce(watcher, deps) {
         source: 'github',
         producer: 'watcher',
         // the card leads with the story or the PR ref rather than a bare "GitHub"
-        ref: { prRefs: c.prRefs, storyKey: c.storyKey, prUrl: c.url },
+        ref: { prRefs: c.prRefs, storyKey: c.storyKey, prUrl: c.url, watcher: name, digest: c.digest || undefined },
         dedupeKey: c.dedupeKey,
       });
       state.markSeen(name, GH_SEEN_SCOPE, c.dedupeKey, null, nowMs);
       staged++;
       log(
         `ACTION watcher-candidate name=${name} ` +
-        `${c.storyKey ? `story=${c.storyKey}` : `pr=${c.prRefs[0].repo}#${c.prRefs[0].number}`} ` +
+        `${c.digest ? `batch=${c.prRefs.length}prs` : c.storyKey ? `story=${c.storyKey}` : `pr=${c.prRefs[0].repo}#${c.prRefs[0].number}`} ` +
         `prs=${c.prRefs.length} skill=${c.skill || '-'} prio=${c.priority}`
       );
     } catch (e) {

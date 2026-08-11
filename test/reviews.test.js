@@ -516,3 +516,42 @@ test('parseQueue: surfaces GraphQL errors and bad payloads as thrown messages', 
   assert.throws(() => gh.parseQueue(JSON.stringify({ errors: [{ message: 'Bad credentials' }] })), /Bad credentials/);
   assert.throws(() => gh.parseQueue(JSON.stringify({ data: {} })), /unexpected response shape/);
 });
+
+// ---- digest ('all') group mode ---------------------------------------------
+
+test("groupMode 'all': the whole selection folds into one digest candidate", () => {
+  const list = [
+    pr({ repo: 'acme/aws-proxy', number: 38, author: 'dependabot', title: 'Bump actions/checkout from 6 to 7' }),
+    pr({ repo: 'acme/pan-mon', number: 81, author: 'dependabot', title: 'Bump the patch-updates group' }),
+    pr({ repo: 'acme/web-apigw', number: 574, author: 'renovate', title: 'Bump spring-retry' }),
+  ];
+  const out = reviews.planCandidates(list, {
+    groupMode: 'all',
+    includeAuthors: ['dependabot', 'renovate'],
+    resolveRepo: (r) => `/c/${r.split('/')[1]}`,
+    skillForRepo: () => 'review-java',
+  });
+  assert.equal(out.candidates.length, 1);
+  const d = out.candidates[0];
+  assert.equal(d.digest, true);
+  assert.equal(d.prRefs.length, 3);
+  assert.match(d.reason, /3 PRs in one batch/);
+  assert.equal(d.priority, 0, 'a routine batch never outranks real reviews');
+  assert.match(d.prompt, /own merits/, 'digest coherence note, not the story one');
+  assert.doesNotMatch(d.prompt, /one story/);
+});
+
+test("groupMode 'all': queue change changes the dedupe key; same queue suppresses", () => {
+  const list = [pr({ number: 1, tipOid: 'aaa1111' }), pr({ number: 2, tipOid: 'bbb2222' })];
+  const k1 = reviews.planCandidates(list, { groupMode: 'all' }).candidates[0].dedupeKey;
+  const k1b = reviews.planCandidates([...list].reverse(), { groupMode: 'all' }).candidates[0].dedupeKey;
+  assert.equal(k1, k1b, 'order-independent');
+  const k2 = reviews.planCandidates([...list, pr({ number: 3, tipOid: 'ccc3333' })], { groupMode: 'all' })
+    .candidates[0].dedupeKey;
+  assert.notEqual(k1, k2, 'a new bump re-stages the digest');
+});
+
+test("groupMode 'all': empty selection stages nothing", () => {
+  const out = reviews.planCandidates([pr({ isDraft: true })], { groupMode: 'all' });
+  assert.equal(out.candidates.length, 0);
+});

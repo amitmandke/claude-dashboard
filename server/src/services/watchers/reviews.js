@@ -266,9 +266,11 @@ function buildPrompt(group, { template = DEFAULT_PROMPT_TEMPLATE, repoPaths = {}
     .replace('{skills}', skills)
     .replace(
       '{coherence}',
-      group.prs.length > 1
-        ? '\nThese PRs are part of one story — review them together for coherence.'
-        : ''
+      group.digest
+        ? '\nThese are batched routine PRs — review and merge each on its own merits.'
+        : group.prs.length > 1
+          ? '\nThese PRs are part of one story — review them together for coherence.'
+          : ''
     )
     .replace(/\n{3,}/g, '\n\n')
     .trim();
@@ -276,6 +278,7 @@ function buildPrompt(group, { template = DEFAULT_PROMPT_TEMPLATE, repoPaths = {}
 
 /** confidence-free priority: a grouped story outranks a lone PR, re-reviews first. */
 function priorityFor(group) {
+  if (group.digest) return 0; // routine batch — never outranks real review work
   const isReReview = group.prs.some((p) => p.myLastReviewAt);
   if (isReReview) return 2;
   return group.prs.length > 1 ? 1 : 0;
@@ -295,6 +298,7 @@ function planCandidates(
     maxGroupSize = DEFAULT_MAX_GROUP_SIZE,
     maxStagePerTick = 5,
     projects = [],
+    groupMode = 'story',
     template = DEFAULT_PROMPT_TEMPLATE,
     resolveRepo = () => null,
     skillForRepo = () => '',
@@ -303,7 +307,17 @@ function planCandidates(
   } = {}
 ) {
   const selected = selectPrs(prs, { excludeAuthors, includeAuthors, skipDrafts });
-  const groups = groupByStory(selected, { maxGroupSize, projects });
+  // 'all' folds the entire selection into ONE digest group — what a bot-PR
+  // watcher wants: dependency bumps share no story key, so story grouping would
+  // hand back one candidate per bump, defeating the batch. 'story' is the
+  // human-review default.
+  const groups =
+    groupMode === 'all'
+      ? selected.length
+        ? [{ storyKey: null, digest: true, prs: [...selected].sort((a, b) =>
+            a.repo === b.repo ? a.number - b.number : a.repo.localeCompare(b.repo)) }]
+        : []
+      : groupByStory(selected, { maxGroupSize, projects });
 
   const out = [];
   let suppressed = 0;
@@ -340,12 +354,15 @@ function planCandidates(
       skill,
       prompt: buildPrompt(group, { template, repoPaths, skillsByRepo }),
       reason:
-        (group.storyKey
-          ? `GitHub review requested — story ${group.storyKey} (${group.prs.length} PRs)`
-          : `GitHub review requested — ${refOf(group.prs[0])}`) + (cwd ? '' : ' [pick a repo before launch]'),
+        (group.digest
+          ? `GitHub review requested — ${group.prs.length} PRs in one batch`
+          : group.storyKey
+            ? `GitHub review requested — story ${group.storyKey} (${group.prs.length} PRs)`
+            : `GitHub review requested — ${refOf(group.prs[0])}`) + (cwd ? '' : ' [pick a repo before launch]'),
       priority: priorityFor(group),
       prRefs: group.prs.map((p) => ({ repo: p.repo, number: p.number })),
       storyKey: group.storyKey,
+      digest: !!group.digest,
       url: group.prs.length === 1 ? group.prs[0].url || '' : '',
     });
   }

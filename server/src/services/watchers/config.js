@@ -276,6 +276,7 @@ function normalizeGithubTrigger(t) {
   if (excludeAuthors.length && includeAuthors.length) {
     return { error: 'github trigger cannot set both includeAuthors and excludeAuthors' };
   }
+  const group = t.group === 'all' ? 'all' : 'story';
   const first = parseInt(t.first, 10);
   const maxGroupSize = parseInt(t.maxGroupSize, 10);
   const maxStagePerTick = parseInt(t.maxStagePerTick, 10);
@@ -287,6 +288,7 @@ function normalizeGithubTrigger(t) {
     excludeAuthors,
     includeAuthors,
     skipDrafts: t.skipDrafts === undefined ? true : !!t.skipDrafts,
+    group,
     first: Number.isFinite(first) && first > 0 ? Math.min(first, 100) : 50,
     maxGroupSize: Number.isFinite(maxGroupSize) && maxGroupSize > 0 ? maxGroupSize : 5,
     maxStagePerTick: Number.isFinite(maxStagePerTick) && maxStagePerTick > 0 ? maxStagePerTick : 5,

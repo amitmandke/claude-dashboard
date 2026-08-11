@@ -381,6 +381,13 @@
             <div class="chips-inp" id="wd-gh-projects"></div>
             <span class="fld-hint">Key prefixes that are real projects (e.g. AK). Empty = a
               built-in denylist keeps ids like SHA-256 from looking like stories.</span>
+            <label class="lbl">Candidates</label>
+            <div class="seg" id="wd-gh-group-mode">
+              <button type="button" data-mode="story" class="on">One per PR / story</button>
+              <button type="button" data-mode="all">All in one batch</button>
+            </div>
+            <span class="fld-hint">“One batch” folds everything the query selects into a single
+              digest card — made for a bot-PR watcher, where bumps share no story.</span>
             <label class="lbl">Authors</label>
             <div class="seg" id="wd-gh-author-mode">
               <button type="button" data-mode="exclude" class="on">Skip bots + these</button>
@@ -436,6 +443,13 @@
               </div>
             </div>
             <span class="fld-hint">The queue moves on human timescales — one API call per poll.</span>
+            <label class="lbl prompt-lbl" for="wd-gh-prompt">Prompt template <span class="sub">— optional</span></label>
+            <textarea id="wd-gh-prompt" class="inp" spellcheck="false"
+              placeholder="Review the following PR(s){story}:&#10;&#10;{prs}&#10;&#10;{repos}&#10;{skills}&#10;{coherence}"></textarea>
+            <span class="fld-hint">Shapes every candidate's launch prompt. Placeholders:
+              <code>{prs}</code> the PR list · <code>{story}</code> “ for story AK-123” ·
+              <code>{repos}</code> local checkout paths · <code>{skills}</code> which review skill(s) ·
+              <code>{coherence}</code> the review-together note. Empty = the built-in hand-off.</span>
           </div>
         </div>
 
