@@ -414,11 +414,18 @@ tip commit, and your own last review — because the alternative is one subproce
 - **Two grouping modes.** `group: "story"` (default) is the human-review shape above.
   `group: "all"` folds the entire selection into **one digest candidate** — built for a second,
   bot-only watcher (`includeAuthors: ["dependabot", …]`): dependency bumps share no story key, so
-  story grouping would hand back one card per bump, defeating the batch. A digest **supersedes its
-  own previous pending card** when the queue changes (the batch *is* the queue, so the old snapshot
-  is stale; launched/dismissed digests are history and kept), always carries priority 0 (routine
-  work never outranks real reviews), and its coherence note says "review each on its own merits"
-  rather than the one-story line.
+  story grouping would hand back one card per bump, defeating the batch. A digest always carries
+  priority 0 (routine work never outranks real reviews) and its coherence note says "review each on
+  its own merits" rather than the one-story line.
+- **A fresh snapshot supersedes stale pending cards.** The tip-sha dedupe key deliberately makes a
+  pushed-to PR a *new* candidate — but without cleanup, the old pending card stayed too, so one
+  actively-developed PR showed as two or three cards (and a PR flipping between solo and
+  story-grouped duplicated the same way). When staging, the watcher removes its own **pending**
+  cards that share a PR with the new one (or any pending digest, when staging a digest — the batch
+  *is* the queue, overlap or not). Launched/dismissed cards are never touched: they are the user's
+  history, and their seen-key already stops an unchanged PR from re-staging — which is what makes
+  "dismissed, then pushed → re-review appears next to the dismissed history" the preserved,
+  intended behaviour.
 - **Volume.** `maxStagePerTick` bounds new candidates per poll, so a first run against a
   long-standing queue fills gradually over successive ticks instead of dumping thirty at once.
 

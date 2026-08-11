@@ -172,7 +172,9 @@ a function testable, export it (several are exported solely for tests, noted as 
   bump into a real story, hence `jiraProjects` / the standards denylist; **(d)** GitHub reports
   Dependabot as plain `dependabot`, with no `[bot]` suffix, so suffix-matching alone lets every
   bump through; **(e)** the dedupe key embeds the tip commit so suppression and re-review are one
-  rule. `gh.js` is coverage-excluded (pure I/O, like `slack.js`); keep the decisions in
+  rule — and because a push therefore mints a NEW key, staging must **supersede** the watcher's own
+  stale *pending* cards sharing a PR with the new one, or an active PR piles up duplicate cards
+  (three for one PR, live); launched/dismissed cards are history and stay. `gh.js` is coverage-excluded (pure I/O, like `slack.js`); keep the decisions in
   `reviews.js`, which is unit-tested at 100% lines. Skills come from the repo's build file, never
   the LLM — that is what keeps this producer alive when the classifier is down.
 - **Never spawn `claude` by bare name — resolve it.** `config.resolveClaudeBin()` probes
