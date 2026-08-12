@@ -168,7 +168,18 @@ a function testable, export it (several are exported solely for tests, noted as 
   **(a)** `review-requested:@me` does NOT exclude PRs you already reviewed, AND submitting any
   review silently drops the PR from that search — so the watcher must run a second
   `reviewed-by:@me` query for re-reviews, and the reviewed-vs-tip-commit comparison is mandatory
-  on both; **(b)** grouping must be
+  on both; **(a2)** the commit comparison is NOT sufficient on its own — the usual end of a review
+  round is the author *answering your comments* and re-requesting you with **no push**, which leaves
+  the tip commit older than your review, so "nothing changed" silently swallowed a live ask (five
+  PRs at once, found only because Amit asked why tenant-manager#827/#828 never appeared). There is
+  no field for "when was I asked" — `reviewRequests` has no timestamp — so it comes from
+  `timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT])`, newest event
+  naming **you**: a *team* request has no `login` and is not a personal ask, and if your newest
+  event is a *removal* the answer must be null or the `reviewed-by:@me` query resurfaces a PR nobody
+  is waiting on. The re-request stamp goes into the dedupe key **conditionally** — a PR with no
+  outstanding re-request must key byte-identically to the pre-stamp scheme, or every key in `seen`
+  stops matching and the whole queue re-stages on the first poll after the upgrade (there is a test
+  pinning the exact string); **(b)** grouping must be
   key-centric, never transitive — a chain fused five unrelated PRs into one group nothing could
   name; **(c)** `SHA-256` matches a Jira-key regex, and that one coincidence chained a Dependabot
   bump into a real story, hence `jiraProjects` / the standards denylist; **(d)** GitHub reports

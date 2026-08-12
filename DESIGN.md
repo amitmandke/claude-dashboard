@@ -479,8 +479,9 @@ asks GitHub directly, through the `gh` CLI the user is already authenticated wit
 store, no OAuth app, no new secret in config.
 
 `gh.js` fetches the whole queue in **one GraphQL call** — identity, body, draft state, author,
-tip commit, and your own last review — because the alternative is one subprocess per PR across a
-~50-PR queue. `reviews.js` then decides, as pure unit-tested logic:
+tip commit, your own last review, and when your review was last *asked for* — because the
+alternative is one subprocess per PR across a ~50-PR queue. `reviews.js` then decides, as pure
+unit-tested logic:
 
 - **Selection.** Two searches feed one queue. `review-requested:@me` covers fresh asks — but
   GitHub *removes* you from requested reviewers the moment you submit any review, so a PR you
@@ -488,11 +489,24 @@ tip commit, and your own last review — because the alternative is one subproce
   back. A second query (`reviewed-by:@me`, derived from the configured search by substitution so
   org-filters carry over; disable with `reReviews: false`) supplies those, deduped by
   `repo#number`. The same rule then filters both: never reviewed → include; reviewed but the tip
-  commit is newer than your review → include (the re-review case); reviewed with nothing new →
-  skip. Other reviewers are never consulted — someone else approving says nothing about whether
-  *your* review is outstanding. Drafts and bot authors are excluded by default, and
+  commit is newer than your review → include (*the code moved*); reviewed but your review was
+  **re-requested** after you submitted it → include (*the conversation moved*); reviewed with
+  nothing new → skip. Other reviewers are never consulted — someone else approving says nothing
+  about whether *your* review is outstanding. Drafts and bot authors are excluded by default, and
   `includeAuthors` inverts the author filter so a second watcher can batch exactly the bot PRs
   the first one drops, with no code change.
+- **A re-request is a re-review, and commits cannot express it.** The common close to a review
+  round is the author *answering your comments* and asking you back without pushing anything — the
+  tip commit then predates your review, so the commit rule alone reads it as "nothing changed" and
+  drops a live ask in silence. There is no field for "when was I asked": `reviewRequests` says who
+  is currently on the hook but carries no timestamp, so the answer comes from the PR timeline —
+  the newest `REVIEW_REQUESTED_EVENT` naming *you*. Two details are load-bearing. A **team** request
+  carries no login and is deliberately not a personal ask. And if your newest timeline event is a
+  *removal*, the answer is null: a withdrawn request must not read as outstanding, or the
+  `reviewed-by:@me` query resurfaces a PR nobody is waiting on you for. The card names which of the
+  three cases it is ("review requested" / "re-review, new commits" / "re-review requested"), and a
+  re-request with no push adds a prompt line sending the session to the PR conversation rather than
+  the diff — otherwise it diffs two identical trees and reports that nothing changed.
 - **Retiring finished work.** A pending card is replaced when a fresh snapshot supersedes it — but
   that only happens when something *stages*, and a merged PR leaves the search queue entirely, so
   nothing stages, nothing supersedes, and pending cards are exempt from retention pruning. The card
@@ -516,11 +530,15 @@ tip commit, and your own last review — because the alternative is one subproce
   call, so this producer keeps working when the headless classifier does not. A story whose
   repos all resolve to one skill carries it; a genuinely mixed Go+Java story carries none and
   the prompt names the skill per repo rather than the card guessing one.
-- **Dedupe encodes review state.** The key is the story (or PR) plus each tip commit, so an
-  unchanged PR yields the key already on record and stays quiet whatever became of its
-  candidate, while a new commit yields a new key and resurfaces as a re-review. That is what
-  makes "skip what I've reviewed" and "show it again when it changes" a single rule instead of
-  two. Keys live in the shared `seen` map, inheriting its TTL pruning.
+- **Dedupe encodes review state.** The key is the story (or PR) plus each tip commit — plus, only
+  when it is newer than your review, the moment your review was re-requested. An unchanged PR
+  yields the key already on record and stays quiet whatever became of its candidate, while a new
+  commit *or* a fresh ask yields a new key and resurfaces as a re-review. That is what makes "skip
+  what I've reviewed" and "show it again when it changes" a single rule instead of two. The
+  re-request stamp is appended **conditionally** for a reason: a PR with no outstanding re-request
+  must key exactly as it did before that stamp existed, or every key already in `seen` stops
+  matching and the whole queue re-stages as new work on the first poll after an upgrade. Keys live
+  in the shared `seen` map, inheriting its TTL pruning.
 - **Two grouping modes.** `group: "story"` (default) is the human-review shape above.
   `group: "all"` folds the entire selection into **one digest candidate** — built for a second,
   bot-only watcher (`includeAuthors: ["dependabot", …]`): dependency bumps share no story key, so

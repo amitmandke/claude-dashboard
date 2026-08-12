@@ -69,6 +69,43 @@ test("needsMyReview: another person's review is irrelevant", () => {
   assert.equal(reviews.needsMyReview(p), true);
 });
 
+// ---- the re-request rule (the second way a re-review starts) ---------------
+
+/** The live tenant-manager#827 shape: reviewed, re-requested, nothing pushed. */
+const reRequested = (over = {}) =>
+  pr({
+    tipCommittedDate: '2026-08-12T00:45:36Z',
+    myLastReviewAt: '2026-08-12T01:13:41Z',
+    myReviewRequestedAt: '2026-08-12T23:04:11Z',
+    ...over,
+  });
+
+test('needsMyReview: re-requested after my review, with no new commits -> re-review', () => {
+  // tenant-manager#827/#828: the author answered my comments and asked me back.
+  // The commit rule alone said "nothing changed" and dropped the ask silently.
+  assert.equal(reviews.needsMyReview(reRequested()), true);
+  assert.equal(reviews.reReviewRequested(reRequested()), true);
+  assert.equal(reviews.reRequestedWithoutCommits(reRequested()), true);
+});
+
+test('needsMyReview: the OPENING request is not a re-review', () => {
+  const p = reRequested({ myReviewRequestedAt: '2026-08-12T00:46:33Z' }); // before my review
+  assert.equal(reviews.reReviewRequested(p), false);
+  assert.equal(reviews.needsMyReview(p), false, 'I reviewed it and nothing has moved since');
+});
+
+test('needsMyReview: a re-request I have not yet reviewed at all stays a plain first look', () => {
+  const p = reRequested({ myLastReviewAt: null });
+  assert.equal(reviews.reReviewRequested(p), false, 'no review to be re-requested after');
+  assert.equal(reviews.needsMyReview(p), true);
+});
+
+test('reRequestedWithoutCommits: a re-request AND new commits is an ordinary diff review', () => {
+  const p = reRequested({ tipCommittedDate: '2026-08-12T22:00:00Z' });
+  assert.equal(reviews.reReviewRequested(p), true);
+  assert.equal(reviews.reRequestedWithoutCommits(p), false, 'there is real code to read');
+});
+
 // ---- author policy --------------------------------------------------------
 
 test('isBotAuthor: the [bot] suffix is enough', () => {
@@ -245,6 +282,35 @@ test('dedupeKeyFor: a new commit produces a new key, so the re-review surfaces',
   assert.notEqual(before, after);
 });
 
+test('dedupeKeyFor: a re-request after my review produces a new key', () => {
+  const base = pr({ tipOid: 'aaaaaaaaaa', myLastReviewAt: '2026-08-12T01:13:41Z' });
+  const before = reviews.dedupeKeyFor({ storyKey: null, prs: [base] });
+  const after = reviews.dedupeKeyFor({
+    storyKey: null,
+    prs: [{ ...base, myReviewRequestedAt: '2026-08-12T23:04:11Z' }],
+  });
+  assert.notEqual(before, after);
+  assert.match(after, /!20260812T230411Z$/, 'the stamp is readable in the state file');
+});
+
+test('dedupeKeyFor: with NO outstanding re-request the key is byte-identical to the old scheme', () => {
+  // Load-bearing: every key already in `seen` must keep matching after the
+  // upgrade, or the entire queue re-stages as new work on the first poll.
+  const p = pr({ repo: 'acme/rm', number: 1683, tipOid: 'deadbeefcafe' });
+  const opening = { ...p, myLastReviewAt: null, myReviewRequestedAt: '2026-08-12T00:46:33Z' };
+  const answered = { ...p, myLastReviewAt: '2026-08-12T01:13:41Z', myReviewRequestedAt: '2026-08-12T00:46:33Z' };
+  assert.equal(reviews.dedupeKeyFor({ storyKey: null, prs: [p] }), 'gh:acme/rm#1683:acme/rm#1683@deadbee');
+  assert.equal(reviews.dedupeKeyFor({ storyKey: null, prs: [opening] }), 'gh:acme/rm#1683:acme/rm#1683@deadbee');
+  assert.equal(reviews.dedupeKeyFor({ storyKey: null, prs: [answered] }), 'gh:acme/rm#1683:acme/rm#1683@deadbee');
+});
+
+test('dedupeKeyFor: a SECOND re-request on the same tip resurfaces again', () => {
+  const base = pr({ tipOid: 'aaaaaaaaaa', myLastReviewAt: '2026-08-12T01:13:41Z' });
+  const first = reviews.dedupeKeyFor({ storyKey: null, prs: [{ ...base, myReviewRequestedAt: '2026-08-12T23:04:11Z' }] });
+  const second = reviews.dedupeKeyFor({ storyKey: null, prs: [{ ...base, myReviewRequestedAt: '2026-08-13T09:00:00Z' }] });
+  assert.notEqual(first, second);
+});
+
 test('dedupeKeyFor: key is order-independent for a group', () => {
   const a = pr({ number: 1, tipOid: '1111111' });
   const b = pr({ number: 2, tipOid: '2222222' });
@@ -266,6 +332,44 @@ test('buildPrompt: single PR names its one skill and repo path', () => {
   assert.match(out, /Repo acme\/widgets: \/home\/u\/code\/widgets/);
   assert.match(out, /Use the review-java skill\./);
   assert.doesNotMatch(out, /one story/, 'no coherence note for a lone PR');
+});
+
+test('buildPrompt: a re-request with no push sends the session to the conversation', () => {
+  const g = { storyKey: null, prs: [reRequested({ repo: 'acme/tm', number: 827 })] };
+  const out = reviews.buildPrompt(g, { skillsByRepo: { 'acme/tm': 'review-java' } });
+  assert.match(out, /re-requested on acme\/tm#827 with no new commits/);
+  assert.match(out, /Start from the PR conversation, not the diff/);
+});
+
+test('buildPrompt: a re-review WITH new commits gets no such note', () => {
+  const g = { storyKey: null, prs: [reRequested({ tipCommittedDate: '2026-08-12T22:00:00Z' })] };
+  assert.doesNotMatch(reviews.buildPrompt(g, {}), /no new commits/);
+});
+
+test('buildPrompt: a story keeps its coherence note alongside the re-request note', () => {
+  const g = {
+    storyKey: 'AK-71511',
+    prs: [reRequested({ repo: 'acme/tm', number: 827 }), reRequested({ repo: 'acme/tm', number: 828 })],
+  };
+  const out = reviews.buildPrompt(g, {});
+  assert.match(out, /part of one story/);
+  assert.match(out, /acme\/tm#827, acme\/tm#828 with no new commits/);
+});
+
+// ---- what the card says --------------------------------------------------
+
+test('reasonFor: names why the card exists now', () => {
+  const fresh = { storyKey: null, prs: [pr()] };
+  const commits = { storyKey: null, prs: [reRequested({ myReviewRequestedAt: null, tipCommittedDate: '2026-08-12T22:00:00Z' })] };
+  const asked = { storyKey: 'AK-71511', prs: [reRequested(), reRequested({ number: 2 })] };
+  assert.equal(reviews.reasonFor(fresh), 'GitHub review requested — acme/widgets#1');
+  assert.equal(reviews.reasonFor(commits), 'GitHub re-review, new commits — acme/widgets#1');
+  assert.equal(reviews.reasonFor(asked), 'GitHub re-review requested — story AK-71511 (2 PRs)');
+});
+
+test('reasonFor: a bot digest stays a plain batch line', () => {
+  const g = { digest: true, storyKey: null, prs: [pr(), pr({ number: 2, myLastReviewAt: '2026-01-01T00:00:00Z' })] };
+  assert.equal(reviews.reasonFor(g), 'GitHub review requested — 2 PRs in one batch');
 });
 
 test('buildPrompt: a story spanning Go and Java names BOTH skills', () => {
@@ -358,6 +462,36 @@ test('planCandidates: an already-staged dedupe key is suppressed, not counted ag
   const second = reviews.planCandidates(list, { isStaged: (k) => staged.has(k) });
   assert.equal(second.candidates.length, 0);
   assert.equal(second.suppressed, 3);
+});
+
+test('planCandidates: the whole re-request path — suppressed, then resurfaced by the ask alone', () => {
+  // The live regression, end to end. Same tip commit throughout: the ONLY thing
+  // that changes is the author asking me back after I commented.
+  const reviewed = () => [
+    pr({ repo: 'acme/tm', number: 827, title: '[CLONE-66] AK-71515', body: 'AK-71511',
+      tipOid: 'dbd900b4', tipCommittedDate: '2026-08-12T00:45:36Z', myLastReviewAt: '2026-08-12T01:13:41Z' }),
+    pr({ repo: 'acme/tm', number: 828, title: '[CLONE-67] AK-71514', body: 'AK-71511',
+      tipOid: '8f278936', tipCommittedDate: '2026-08-12T00:47:06Z', myLastReviewAt: '2026-08-12T01:13:48Z' }),
+  ];
+
+  const quiet = reviews.planCandidates(reviewed(), { projects: ['AK'] });
+  assert.equal(quiet.selected, 0, 'reviewed and nothing moved — stays off the board');
+
+  const asked = reviewed().map((p) => ({ ...p, myReviewRequestedAt: '2026-08-12T23:04:11Z' }));
+  const out = reviews.planCandidates(asked, { projects: ['AK'], defaultCwd: '/c/tm' });
+  assert.equal(out.candidates.length, 1, 'both PRs share AK-71511 — one candidate');
+  const [c] = out.candidates;
+  assert.equal(c.reason, 'GitHub re-review requested — story AK-71511 (2 PRs)');
+  assert.equal(c.priority, 2, 're-reviews outrank first looks');
+  assert.match(c.prompt, /with no new commits/);
+
+  // and it stays quiet from then on, until the next thing moves
+  const again = reviews.planCandidates(asked, {
+    projects: ['AK'],
+    isStaged: (k) => k === c.dedupeKey,
+  });
+  assert.equal(again.candidates.length, 0);
+  assert.equal(again.suppressed, 1);
 });
 
 test('planCandidates: maxStagePerTick bounds the first run', () => {
@@ -486,7 +620,84 @@ test('parseQueue: flattens the GraphQL shape into flat PRs', () => {
     tipCommittedDate: '2026-08-09T10:00:00Z',
     myLastReviewAt: '2026-08-08T10:00:00Z',
     myLastReviewState: 'CHANGES_REQUESTED',
+    myReviewRequestedAt: null,
   });
+});
+
+// The real capture from tenant-manager#827: a team request yields `{}` (no login),
+// and my own re-request lands after my review with no push in between.
+const REQUESTED = (createdAt, login) => ({
+  __typename: 'ReviewRequestedEvent',
+  createdAt,
+  requestedReviewer: login ? { login } : {},
+});
+const REMOVED = (createdAt, login) => ({
+  __typename: 'ReviewRequestRemovedEvent',
+  createdAt,
+  requestedReviewer: login ? { login } : {},
+});
+const queueWith = (timelineNodes, extra = {}) =>
+  JSON.stringify({
+    data: {
+      search: {
+        issueCount: 1,
+        nodes: [
+          {
+            number: 827,
+            repository: { nameWithOwner: 'acme/tm' },
+            commits: { nodes: [{ commit: { oid: 'dbd900b4', committedDate: '2026-08-12T00:45:36Z' } }] },
+            reviews: { nodes: [{ submittedAt: '2026-08-12T01:13:41Z', state: 'COMMENTED' }] },
+            timelineItems: { nodes: timelineNodes },
+            ...extra,
+          },
+        ],
+      },
+    },
+  });
+
+test('parseQueue: myReviewRequestedAt is the newest request naming ME', () => {
+  const { prs } = gh.parseQueue(
+    queueWith([
+      REQUESTED('2026-08-12T00:46:22Z', null), // a team — not a personal ask
+      REQUESTED('2026-08-12T00:46:33Z', 'amitmandke'),
+      REQUESTED('2026-08-12T00:46:34Z', 'moiz-alkira'), // someone else's
+      REQUESTED('2026-08-12T23:04:11Z', 'AmitMandke'), // case-insensitive
+      REQUESTED('2026-08-12T23:04:17Z', null),
+    ]),
+    'amitmandke'
+  );
+  assert.equal(prs[0].myReviewRequestedAt, '2026-08-12T23:04:11Z');
+  assert.equal(reviews.reReviewRequested(prs[0]), true);
+  assert.equal(reviews.needsMyReview(prs[0]), true, 'answered comments must resurface the PR');
+  assert.equal(reviews.reRequestedWithoutCommits(prs[0]), true, 'the tip is older than my review');
+});
+
+test('parseQueue: a WITHDRAWN request does not read as outstanding', () => {
+  const { prs } = gh.parseQueue(
+    queueWith([
+      REQUESTED('2026-08-12T23:04:11Z', 'amitmandke'),
+      REMOVED('2026-08-12T23:30:00Z', 'amitmandke'),
+    ]),
+    'amitmandke'
+  );
+  assert.equal(prs[0].myReviewRequestedAt, null);
+  assert.equal(reviews.needsMyReview(prs[0]), false, 'nobody is waiting on me — stay quiet');
+});
+
+test('parseQueue: a removal OLDER than the live request is ignored', () => {
+  const { prs } = gh.parseQueue(
+    queueWith([
+      REMOVED('2026-08-12T02:00:00Z', 'amitmandke'),
+      REQUESTED('2026-08-12T23:04:11Z', 'amitmandke'),
+    ]),
+    'amitmandke'
+  );
+  assert.equal(prs[0].myReviewRequestedAt, '2026-08-12T23:04:11Z');
+});
+
+test('parseQueue: no login to match against yields no request timestamp', () => {
+  const { prs } = gh.parseQueue(queueWith([REQUESTED('2026-08-12T23:04:11Z', 'amitmandke')]));
+  assert.equal(prs[0].myReviewRequestedAt, null, 'guessing whose request it was is worse than null');
 });
 
 test('parseQueue: a PENDING review (never submitted) reads as not reviewed', () => {
