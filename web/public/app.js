@@ -773,6 +773,7 @@ setView(location.hash.slice(1) || 'sessions');
 let candFilter = '';
 let lastCandSig = null; // signature of the last candidate render — skip rebuilds when unchanged
 const candSel = new Set(); // ids selected for a bulk action; see renderBulkBar
+let candStatus = 'all';    // pending | launched | dismissed — ANDs with candFilter
 const candFilterEl = document.getElementById('cand-filter');
 candFilterEl.addEventListener('input', () => {
   candFilter = candFilterEl.value;
@@ -785,6 +786,17 @@ function candMatches(c, q) {
     .filter(Boolean).join(' ').toLowerCase();
   return hay.includes(q);
 }
+
+// Status is a SEPARATE filter, not another word in the haystack above: a card
+// whose prompt says "dismissed" must not answer to the Dismissed tab, or
+// "select all shown → Clear" would take something you weren't looking at.
+document.getElementById('cand-status').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-status]');
+  if (!btn) return;
+  const want = btn.dataset.status;
+  candStatus = candStatus === want && want !== 'all' ? 'all' : want; // click again to clear
+  if (lastData) renderCandidates(lastData);
+});
 
 // After any candidate mutation, re-pull the authoritative list and re-render
 // right away — don't wait for the next SSE tick (which may lag or be mid-
@@ -971,7 +983,8 @@ function renderCandidates(data) {
   const alive = new Set(list.map((c) => c.id));
   for (const id of candSel) if (!alive.has(id)) candSel.delete(id);
 
-  const sig = JSON.stringify(list) + '|' + atCap + '|' + candFilter + '|' + [...candSel].join(',');
+  const sig = JSON.stringify(list) + '|' + atCap + '|' + candFilter + '|' + candStatus +
+              '|' + [...candSel].join(',');
   if (sig === lastCandSig) return;
   lastCandSig = sig;
 
@@ -982,7 +995,18 @@ function renderCandidates(data) {
   badge.hidden = pending.length === 0;
 
   const q = candFilter.trim().toLowerCase();
-  const filtered = list.filter((c) => candMatches(c, q));
+  const filtered = list.filter(
+    (c) => (candStatus === 'all' || c.status === candStatus) && candMatches(c, q)
+  );
+
+  // status counts come from the WHOLE list, never the filtered view — the chip
+  // has to say how many exist, not how many survived the other filter
+  for (const btn of document.getElementById('cand-status').children) {
+    const st = btn.dataset.status;
+    btn.querySelector('.seg-n').textContent =
+      st === 'all' ? list.length : list.filter((c) => c.status === st).length;
+    btn.classList.toggle('on', candStatus === st);
+  }
 
   const cgrid = document.getElementById('cand-grid');
   cgrid.innerHTML = '';
@@ -1035,8 +1059,15 @@ function renderBulkBar(filtered, list, { pending, q, atCap, liveCount, caps }) {
     clr.append(`🗑 Clear ${n}`, el('small', 'permanent'));
   }
 
+  // A selection survives a filter change on purpose — narrow, select, narrow
+  // again, act once. But then some of it is off-screen, and a verb that would
+  // take cards you cannot see has to say so rather than just showing a number.
+  const hidden = n - selectedShown;
+
   document.getElementById('cand-count').textContent = list.length
-    ? (n > 0 ? `${n} selected · ${list.length} total` : `${pending} pending`) +
+    ? (n > 0
+        ? `${n} selected` + (hidden > 0 ? ` (${hidden} hidden by the filter)` : '') + ` · ${list.length} total`
+        : `${pending} pending`) +
       (q && n === 0 ? ` · ${filtered.length} shown` : '') +
       (atCap ? ` · ${liveCount}/${caps.maxConcurrent} running (at cap)` : '')
     : '';
@@ -1065,8 +1096,17 @@ document.getElementById('cand-bulk-cancel').addEventListener('click', () => {
 document.getElementById('cand-bulk-dismiss').addEventListener('click', () => runBulk('dismiss'));
 document.getElementById('cand-bulk-clear').addEventListener('click', async () => {
   const n = candSel.size;
+  const q = candFilter.trim().toLowerCase();
+  const shown = new Set(((lastData && lastData.candidates) || [])
+    .filter((c) => (candStatus === 'all' || c.status === candStatus) && candMatches(c, q))
+    .map((c) => c.id));
+  const hidden = [...candSel].filter((id) => !shown.has(id)).length;
+
   const ok = await confirmBulk(
     `Clear ${n} candidate${n === 1 ? '' : 's'}?`,
+    // if part of the selection is off-screen, the confirmation is the last place
+    // that can say so — don't let a filter change delete something unseen
+    (hidden ? `${hidden} of them ${hidden === 1 ? 'is' : 'are'} hidden by the current filter. ` : '') +
     'This deletes them now. Dismissed candidates go away on their own after 7 days, ' +
     'if you would rather keep the option to restore them.',
     `Clear ${n}`

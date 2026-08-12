@@ -222,6 +222,13 @@ a function testable, export it (several are exported solely for tests, noted as 
   anything else confirms. A picked session card gets the accent rail **only** — never an accent
   border, which would overwrite the status border (red = waiting, green = working) that tells you
   what you are about to kill.
+- **Candidate status is a filter, never a word in the text haystack.** `candStatus` (the `.seg`
+  chips) ANDs with `candFilter`; `candMatches` must stay status-free, or a card whose *prompt*
+  says "dismissed" would answer to the Dismissed chip and `☑ All shown` → Clear would take
+  something the user wasn't looking at. Chip counts come from the whole list, not the filtered
+  view. A selection deliberately survives a filter change (narrow → select → narrow → act once),
+  so the readout and the Clear confirmation must both report `N hidden by the filter` — that
+  disclosure is the price of not wiping the selection.
 - **Bulk actions send an explicit id list — the server never interprets "all".** `☑ All shown`
   is a client-side convenience that ticks exactly what the filter is rendering, so a bulk verb
   can only reach cards that were on screen and counted; there is no "all" on the wire and no
