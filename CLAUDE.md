@@ -204,6 +204,18 @@ a function testable, export it (several are exported solely for tests, noted as 
   which is why the toolbar carries `N sessions · M shown` and the grid has two empty states
   (`#empty` = truly none, `#sess-nomatch` = filtered out). `lastAssistantText` is deliberately
   NOT matched — a hit with no visible cause on a collapsed card reads as a bug.
+- **Bulk actions send an explicit id list — the server never interprets "all".** `☑ All shown`
+  is a client-side convenience that ticks exactly what the filter is rendering, so a bulk verb
+  can only reach cards that were on screen and counted; there is no "all" on the wire and no
+  `Dismiss all`/`Clear all` endpoint to mis-scope. `POST /api/candidates/bulk` must stay matched
+  **before** the `/api/candidates/:id` regex, whose `[\w-]+` reads `bulk` as an id (same trap as
+  `RESERVED_WATCHER_PATHS`). `store.bulk` does one read-modify-write for the whole set — the
+  per-id path would rewrite the entire JSON file once per card — and reports `skipped`/`notFound`
+  rather than throwing, because a selection built seconds ago races launches in other tabs; the UI
+  turns that into "Dismissed 11 · 1 had already been launched". `dismiss` refuses non-pending
+  items on purpose (dismissing a launched candidate rewrites live history); `clear` deletes
+  whatever it is handed. Selection state lives in the `candSel` Set and in `lastCandSig`, never in
+  the DOM — the grid is rebuilt wholesale on every snapshot, so DOM-held checkboxes evaporate.
 - **SSE-driven grids must not rebuild unless something structural changed.** The snapshot arrives
   every 1.5s; `grid.textContent = ''` + rebuild throws away scroll position, hover and focus, which
   reads as the tab yanking you to the top mid-scroll. Both grids guard against it with a signature of

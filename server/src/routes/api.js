@@ -352,6 +352,25 @@ async function handle(req, res, url) {
     }
   }
 
+  // Bulk actions over an explicit id list. Matched BEFORE the :id route below,
+  // whose [\w-]+ would happily read "bulk" as a candidate id. The server never
+  // interprets "all" — the client sends exactly the ids it had selected, so a
+  // bulk action can only ever touch what was on screen and counted.
+  if (url.pathname === '/api/candidates/bulk' && req.method === 'POST') {
+    try {
+      const body = await readBody(req);
+      const result = candidates.bulk(body.action, body.ids);
+      console.log(
+        `[${new Date().toISOString()}] ACTION candidate-bulk action=${result.action} ` +
+        `done=${result.done} skipped=${result.skipped.length} notFound=${result.notFound.length}`
+      );
+      json(res, 200, result);
+    } catch (e) {
+      json(res, e.status || 500, { error: e.message });
+    }
+    return true;
+  }
+
   const candMatch = url.pathname.match(/^\/api\/candidates\/([\w-]+)(?:\/(launch|dismiss|undismiss))?$/);
   if (candMatch) {
     const id = candMatch[1];

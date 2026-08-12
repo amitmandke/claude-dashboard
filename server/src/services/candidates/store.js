@@ -186,6 +186,57 @@ function undismiss(id) {
   return c;
 }
 
+/**
+ * Apply one action to many candidates in a SINGLE read-modify-write.
+ *
+ * The per-id endpoints would work here — the browser could just fire N of them —
+ * but each one rewrites the whole JSON file, so clearing a filtered sweep of 20
+ * cards means 20 full rewrites for one user gesture. This does one.
+ *
+ * It also reports what it *didn't* do, which the per-id path can't: a bulk action
+ * is applied to a selection the user built a moment ago, so a card may have been
+ * launched from another tab in between. Callers surface that ("Dismissed 11 · 1
+ * had already been launched") rather than a blanket success or failure.
+ *
+ * `dismiss` only applies to pending candidates — dismissing an already-launched
+ * one would rewrite live history. `clear` deletes whatever it is given, which is
+ * the point of clear.
+ */
+function bulk(action, ids) {
+  if (action !== 'dismiss' && action !== 'clear') {
+    throw err(400, `unknown bulk action: ${action}`);
+  }
+  if (!Array.isArray(ids)) throw err(400, 'ids must be an array');
+  load();
+
+  const wanted = new Set(ids);
+  const byId = new Map(cache.candidates.map((c) => [c.id, c]));
+  const result = { action, done: 0, skipped: [], notFound: [] };
+  const at = new Date().toISOString();
+
+  for (const id of wanted) {
+    const c = byId.get(id);
+    if (!c) { result.notFound.push(id); continue; }
+    if (action === 'dismiss' && c.status !== 'pending') {
+      result.skipped.push({ id, status: c.status });
+      continue;
+    }
+    if (action === 'dismiss') {
+      c.status = 'dismissed';
+      c.statusAt = at;
+    }
+    result.done++;
+  }
+
+  if (action === 'clear') {
+    const doomed = new Set(cache.candidates.filter((c) => wanted.has(c.id)).map((c) => c.id));
+    cache.candidates = cache.candidates.filter((c) => !doomed.has(c.id));
+  }
+
+  if (result.done) save(); // nothing changed → don't touch the file
+  return result;
+}
+
 /** Drop a candidate from the list entirely (the ✕ Clear action). */
 function remove(id) {
   load();
@@ -232,6 +283,7 @@ module.exports = {
   dismiss,
   undismiss,
   remove,
+  bulk,
   prune,
   pendingCount,
   // pure helpers, exported for unit tests

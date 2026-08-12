@@ -668,6 +668,7 @@ setView(location.hash.slice(1) || 'sessions');
 // is already in the snapshot, so this is pure frontend — no server round-trip.
 let candFilter = '';
 let lastCandSig = null; // signature of the last candidate render — skip rebuilds when unchanged
+const candSel = new Set(); // ids selected for a bulk action; see renderBulkBar
 const candFilterEl = document.getElementById('cand-filter');
 candFilterEl.addEventListener('input', () => {
   candFilter = candFilterEl.value;
@@ -737,6 +738,16 @@ function buildCandidate(c, ctx) {
   const card = candTemplate.content.cloneNode(true).querySelector('.cand-card');
   card.dataset.status = c.status;
   card.classList.toggle('cand-inactive', c.status !== 'pending');
+
+  // Selection lives in candSel (a Set of ids), never in the DOM — the grid is
+  // rebuilt wholesale on every change, so DOM-held checkboxes would evaporate.
+  const pick = card.querySelector('.cand-pick');
+  pick.checked = candSel.has(c.id);
+  card.classList.toggle('picked', pick.checked);
+  pick.addEventListener('change', () => {
+    if (pick.checked) candSel.add(c.id); else candSel.delete(c.id);
+    if (lastData) renderCandidates(lastData);
+  });
 
   const skillEl = card.querySelector('.cand-skill');
   skillEl.textContent = c.action.skill ? '/' + c.action.skill : '(no skill)';
@@ -850,7 +861,13 @@ function renderCandidates(data) {
   // The SSE snapshot fires every tick even when candidates haven't changed;
   // rebuilding the grid then would reset scroll/expansion mid-read. Skip the
   // rebuild unless something that affects the rendered output actually changed.
-  const sig = JSON.stringify(list) + '|' + atCap + '|' + candFilter;
+  // Drop selected ids that no longer exist (launched from another tab, pruned)
+  // before signing the render — a stale id would inflate every count and be sent
+  // to the server as a notFound.
+  const alive = new Set(list.map((c) => c.id));
+  for (const id of candSel) if (!alive.has(id)) candSel.delete(id);
+
+  const sig = JSON.stringify(list) + '|' + atCap + '|' + candFilter + '|' + [...candSel].join(',');
   if (sig === lastCandSig) return;
   lastCandSig = sig;
 
@@ -870,12 +887,134 @@ function renderCandidates(data) {
   document.getElementById('cand-empty').hidden = list.length !== 0;
   document.getElementById('cand-nomatch').hidden = !(list.length > 0 && filtered.length === 0);
 
+  renderBulkBar(filtered, list, { pending: pending.length, q, atCap, liveCount, caps });
+}
+
+// ---- bulk selection ------------------------------------------------------
+
+// The toolbar's right half IS the triage bar — the filter stays where it is,
+// because the filter is what defined the selection. There is deliberately no
+// floating action bar, and no "Launch selected": launching a dozen candidates
+// means a dozen iTerm2 windows, and the concurrency cap would silently drop the
+// tail. Bulk clears the board; it doesn't fill it.
+function renderBulkBar(filtered, list, { pending, q, atCap, liveCount, caps }) {
+  const shownIds = filtered.map((c) => c.id);
+  const selectedShown = shownIds.filter((id) => candSel.has(id)).length;
+  const n = candSel.size;
+
+  // "All shown" means exactly that — it can only ever tick what the filter is
+  // showing, so "select all then Clear" can never reach a card you haven't seen.
+  const selAll = document.getElementById('cand-selall');
+  selAll.checked = shownIds.length > 0 && selectedShown === shownIds.length;
+  selAll.indeterminate = selectedShown > 0 && selectedShown < shownIds.length;
+  selAll.disabled = shownIds.length === 0;
+
+  const verbs = document.getElementById('cand-bulk-verbs');
+  verbs.hidden = n === 0;
+  // the create action steps aside while a selection is live — one job at a time
+  document.getElementById('new-candidate-btn').hidden = n > 0;
+
+  if (n > 0) {
+    const dismissable = [...candSel].filter(
+      (id) => (list.find((c) => c.id === id) || {}).status === 'pending'
+    ).length;
+    const dis = document.getElementById('cand-bulk-dismiss');
+    dis.innerHTML = '';
+    dis.append(`✕ Dismiss ${dismissable}`, el('small', 'keeps them 7 days'));
+    dis.disabled = dismissable === 0;
+    dis.title = dismissable === 0
+      ? 'Nothing selected is still pending — dismiss only applies to pending candidates'
+      : '';
+
+    const clr = document.getElementById('cand-bulk-clear');
+    clr.innerHTML = '';
+    clr.append(`🗑 Clear ${n}`, el('small', 'permanent'));
+  }
+
   document.getElementById('cand-count').textContent = list.length
-    ? `${pending.length} pending` +
-      (q ? ` · ${filtered.length} shown` : '') +
+    ? (n > 0 ? `${n} selected · ${list.length} total` : `${pending} pending`) +
+      (q && n === 0 ? ` · ${filtered.length} shown` : '') +
       (atCap ? ` · ${liveCount}/${caps.maxConcurrent} running (at cap)` : '')
     : '';
 }
+
+function el(tag, text) {
+  const e = document.createElement(tag);
+  e.textContent = text;
+  return e;
+}
+
+document.getElementById('cand-selall').addEventListener('change', (e) => {
+  const q = candFilter.trim().toLowerCase();
+  const shown = ((lastData && lastData.candidates) || []).filter((c) => candMatches(c, q));
+  for (const c of shown) {
+    if (e.target.checked) candSel.add(c.id); else candSel.delete(c.id);
+  }
+  if (lastData) renderCandidates(lastData);
+});
+
+document.getElementById('cand-bulk-cancel').addEventListener('click', () => {
+  candSel.clear();
+  if (lastData) renderCandidates(lastData);
+});
+
+document.getElementById('cand-bulk-dismiss').addEventListener('click', () => runBulk('dismiss'));
+document.getElementById('cand-bulk-clear').addEventListener('click', async () => {
+  const n = candSel.size;
+  const ok = await confirmBulk(
+    `Clear ${n} candidate${n === 1 ? '' : 's'}?`,
+    'This deletes them now. Dismissed candidates go away on their own after 7 days, ' +
+    'if you would rather keep the option to restore them.',
+    `Clear ${n}`
+  );
+  if (ok) runBulk('clear');
+});
+
+// A bulk action runs against a selection built a moment ago, so a card may have
+// been launched in another tab in between. Report exactly that rather than a
+// blanket "done" — or worse, a blanket failure.
+async function runBulk(action) {
+  const ids = [...candSel];
+  if (!ids.length) return;
+  try {
+    const res = await fetch('/api/candidates/bulk', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ action, ids }),
+    });
+    const r = await res.json();
+    if (!res.ok) throw new Error(r.error || res.statusText);
+    candSel.clear();
+    const verb = action === 'clear' ? 'Cleared' : 'Dismissed';
+    const missed = [...r.skipped.map((s) => s.status), ...r.notFound.map(() => 'gone')];
+    const tally = missed.reduce((m, s) => (m[s] = (m[s] || 0) + 1, m), {});
+    const note = Object.entries(tally)
+      .map(([s, k]) => `${k} had already been ${s === 'gone' ? 'removed' : s}`)
+      .join(' · ');
+    toast(`${verb} ${r.done}` + (note ? ` · ${note}` : ''), true);
+    refreshCandidates();
+  } catch (err) {
+    toast(`Bulk ${action} failed: ${err.message}`);
+  }
+}
+
+const bcDialog = document.getElementById('bulk-confirm-dialog');
+let bcResolve = null;
+function confirmBulk(title, copy, goLabel) {
+  document.getElementById('bc-title').textContent = title;
+  document.getElementById('bc-copy').textContent = copy;
+  document.getElementById('bc-go').textContent = goLabel; // same verb + count as the button clicked
+  bcDialog.showModal();
+  return new Promise((resolve) => { bcResolve = resolve; });
+}
+function closeBulkConfirm(answer) {
+  if (bcDialog.open) bcDialog.close();
+  if (bcResolve) { bcResolve(answer); bcResolve = null; }
+}
+document.getElementById('bc-go').addEventListener('click', () => closeBulkConfirm(true));
+document.getElementById('bc-cancel').addEventListener('click', () => closeBulkConfirm(false));
+document.getElementById('bc-close').addEventListener('click', () => closeBulkConfirm(false));
+bcDialog.addEventListener('close', () => closeBulkConfirm(false)); // Esc
 
 // ---- new-candidate dialog (mirrors the New Session form, but stages instead
 // of launching — it POSTs to /api/candidates)
