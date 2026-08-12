@@ -2503,3 +2503,130 @@ test('re-review: reReviews:false or a custom search without review-requested run
   await loop.runGithubWatcherOnce(ghW({ search: 'is:open is:pr label:urgent' }), base);
   assert.equal(calls.length, 1, 'nothing to substitute -> no second query');
 });
+
+// ---- retiring cards for PRs that already merged -----------------------------
+
+/** ghStub plus the batched state lookup, recording what it was asked about. */
+function ghStubWithStates(prs, states, opts) {
+  const base = ghStub(prs, opts);
+  const asked = [];
+  return {
+    ...base,
+    asked,
+    async prStates(refs) {
+      asked.push(refs.map((r) => `${r.repo}#${r.number}`));
+      return states;
+    },
+  };
+}
+
+test('retire: a pending card whose PR merged is removed once GitHub confirms it', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+
+  // pass 1 stages a card for #900
+  await loop.runGithubWatcherOnce(w, {
+    ...base,
+    ghClient: ghStubWithStates([ghPr({ number: 900, title: 'AK-9 thing', tipOid: 'aaa1' })], {}),
+  });
+  assert.equal(store.items.length, 1);
+  store.items[0].ref.watcher = w.name; // the real store keeps ref.watcher; memStore is thin
+
+  // pass 2: the PR merged, so it is gone from BOTH searches and nothing stages —
+  // the supersede path can never fire for it
+  const gh2 = ghStubWithStates([], { 'acme/java-svc#900': 'MERGED' });
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: gh2 });
+
+  assert.deepEqual(gh2.asked, [['acme/java-svc#900']]);
+  assert.equal(store.items.length, 0, 'merged PR card should be retired');
+});
+
+test('retire: absence from the queue alone never removes a card (withdrawn review request)', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+
+  await loop.runGithubWatcherOnce(w, {
+    ...base,
+    ghClient: ghStubWithStates([ghPr({ number: 901, title: 'AK-9 thing', tipOid: 'aaa1' })], {}),
+  });
+  store.items[0].ref.watcher = w.name;
+
+  // dropped out of the search, but still OPEN — the review request was withdrawn
+  await loop.runGithubWatcherOnce(w, {
+    ...base,
+    ghClient: ghStubWithStates([], { 'acme/java-svc#901': 'OPEN' }),
+  });
+  assert.equal(store.items.length, 1, 'an open PR must keep its card');
+
+  // and an unresolvable PR (lookup failed) likewise keeps it
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStubWithStates([], {}) });
+  assert.equal(store.items.length, 1, 'an unresolved lookup must keep its card');
+});
+
+test('retire: a PR still in the queue is never even asked about', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const pr900 = ghPr({ number: 900, title: 'AK-9 thing', tipOid: 'aaa1' });
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStubWithStates([pr900], {}) });
+  store.items[0].ref.watcher = w.name;
+
+  // same PR still in the queue on the next pass (nothing new to stage: same tip)
+  const gh2 = ghStubWithStates([pr900], { 'acme/java-svc#900': 'MERGED' });
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: gh2 });
+
+  assert.deepEqual(gh2.asked, [], 'a queued PR is live work — no lookup, no retirement');
+  assert.equal(store.items.length, 1);
+});
+
+test('retire: another watcher\'s cards and non-github cards are left alone', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const foreign = store.add({ source: 'github', ref: { watcher: 'someone-else', prRefs: [{ repo: 'acme/java-svc', number: 900 }] } });
+  const manual = store.add({ source: 'manual', ref: { prRefs: [{ repo: 'acme/java-svc', number: 900 }] } });
+
+  await loop.runGithubWatcherOnce(w, {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+    ghClient: ghStubWithStates([], { 'acme/java-svc#900': 'MERGED' }),
+  });
+
+  assert.deepEqual(store.items.map((c) => c.id), [foreign.id, manual.id]);
+});
+
+test('retire: a failing state lookup does not fail the pass', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+  await loop.runGithubWatcherOnce(w, {
+    ...base,
+    ghClient: ghStubWithStates([ghPr({ number: 902, title: 'AK-9 thing', tipOid: 'aaa1' })], {}),
+  });
+  store.items[0].ref.watcher = w.name;
+
+  const broken = { ...ghStub([]), async prStates() { throw new Error('gh exploded'); } };
+  const r = await loop.runGithubWatcherOnce(w, { ...base, ghClient: broken });
+
+  assert.ok(r, 'the pass still returns its summary');
+  assert.equal(store.items.length, 1, 'nothing removed on a failed lookup');
+});
