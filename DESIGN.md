@@ -215,6 +215,11 @@ without switching.
  ┌────────────────────────────────────────────────────────────────────────────┐
  │ [ Filter — skill, prompt, reason, directory…        ]  3 pending  [＋ New]   │
  ├────────────────────────────────────────────────────────────────────────────┤
+ │  …with a selection live, the same toolbar becomes the triage bar:           │
+ │ [ Filter — review requested ] 12 selected · 24 total                        │
+ │                    ☑ All shown [✕ Dismiss 12  ][🗑 Clear 12 ][Cancel]        │
+ │                                 keeps them 7d   permanent                   │
+ ├────────────────────────────────────────────────────────────────────────────┤
  │ ┌────────────────────────────────┐  ┌────────────────────────────────┐      │
  │ │ /review-pr          P2         │  │ /debug          P1             │      │
  │ │ Review the PR linked in #eng   │  │ Investigate the null deref…    │      │
@@ -246,6 +251,40 @@ purely client-side, since the full list is already in the snapshot. Per-card act
 | **✎ Edit** | flip the card into an inline form to edit skill / folder / reason / prompt before launching |
 | **✕ Dismiss** / **↩ Restore** | drop a pending item / restore a dismissed one |
 | **✕ Clear** | remove a `launched`/`dismissed` item from the list immediately |
+| **☐ select** | add the card to a bulk selection (below) |
+
+#### Clearing a sweep of them at once
+
+A watcher pass can stage several cards a tick, so triaging one card at a time is the
+wrong unit of work when a review sweep leaves a screenful behind. Ticking any card's
+checkbox turns the **toolbar into a triage bar in place** — the filter stays exactly
+where it is, because the filter is what defined the selection, and there is deliberately
+no floating action bar arriving from off-screen:
+
+```
+[ Filter — review requested ]  12 selected · 24 total
+                     ☑ All shown  [✕ Dismiss 12 ] [🗑 Clear 12 ] [Cancel]
+                                   keeps them 7d   permanent
+```
+
+- **`☑ All shown` takes exactly what the filter is showing** — which is why there are no
+  separate "Dismiss all" / "Clear all" buttons. Clearing the filter and ticking All shown
+  is the same two clicks, and it can never reach a card you have not seen and counted.
+- **The verbs carry their consequence** (`keeps them 7 days` / `permanent`). Dismiss and
+  Clear read almost identically as icons; at a dozen cards a time, picking the wrong one is
+  the failure worth designing against, so the outcome sits on the button rather than
+  waiting in a dialog.
+- **Dismiss applies only to the pending items in the selection** — dismissing an already
+  launched candidate would rewrite live history — and the button counts only those.
+- **Only Clear confirms**, since only Clear is irreversible, and the confirming button
+  repeats the verb and count that was clicked (`Clear 12`).
+- **There is no "Launch selected."** Twelve launches means twelve terminal windows, and
+  the concurrency cap would silently drop the tail. Bulk clears the board; it doesn't fill it.
+- Selection lives in a client-side `Set` of ids, never in the DOM (the grid rebuilds on
+  every snapshot) and never as "all" on the wire: the client sends the explicit id list.
+  Ids that vanish meanwhile are dropped from the selection before it is counted.
+- The result is reported honestly — `Dismissed 11 · 1 had already been launched` — because
+  a selection built a moment ago can race a launch in another tab.
 
 `launched` and `dismissed` items stay in the list (greyed, still filterable) as a short
 history of what was proposed and what you did with it. They auto-prune on a retention sweep —
@@ -332,6 +371,7 @@ server/src/
 | `/api/candidates/:id/launch` | POST | spawn it (same path as `/sessions/new`), mark `launched`; 409 at the `maxConcurrent` cap |
 | `/api/candidates/:id/dismiss` · `/undismiss` | POST | mark `dismissed` / restore to `pending` |
 | `/api/candidates/:id` | DELETE | remove the item from the list now (the ✕ Clear action) |
+| `/api/candidates/bulk` | POST `{action: 'dismiss'\|'clear', ids[]}` | apply one action to many in a **single** read-modify-write, instead of N requests each rewriting the whole file. Matched before `:id` (whose pattern would read `bulk` as an id). `dismiss` skips non-pending items; the reply is `{action, done, skipped[{id,status}], notFound[]}` so the UI can say what it did *not* do. |
 | `/api/watchers` | GET | watcher status: per-watcher `state` (running/paused/error/disabled), last poll time, staged count, last error, and per-channel `{ id, name, watchingSince, paused, excluded }` — `paused` and `excluded` are reported separately so a row can say *why* it isn't scanning |
 | `/api/watchers/:name/{pause,resume,run}` | POST | pause a watcher (persists `enabled:false`), resume it (persists `enabled:true`), or run one poll now |
 | `/api/watchers/:name/cursor` | POST | move a channel's "watch from" point: `{ channel, at }` (`at` = `"now"` or a date); clears that channel's tracked threads/seen |

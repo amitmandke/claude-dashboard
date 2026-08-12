@@ -151,3 +151,80 @@ test('a corrupt candidates.json degrades to an empty list', () => {
   store._reset();
   assert.deepEqual(store.list(), []);
 });
+
+// ---- bulk actions ----------------------------------------------------------
+
+test('bulk dismiss: only pending items move; the rest are reported, not rewritten', () => {
+  fresh();
+  const a = store.add({ cwd: '/tmp', prompt: 'a' });
+  const b = store.add({ cwd: '/tmp', prompt: 'b' });
+  const launched = store.add({ cwd: '/tmp', prompt: 'c' });
+  store.markLaunched(launched.id, 4242);
+
+  const r = store.bulk('dismiss', [a.id, b.id, launched.id, 'cand_gone']);
+
+  assert.equal(r.done, 2);
+  assert.deepEqual(r.skipped, [{ id: launched.id, status: 'launched' }]);
+  assert.deepEqual(r.notFound, ['cand_gone']);
+  assert.equal(store.find(a.id).status, 'dismissed');
+  assert.equal(store.find(b.id).status, 'dismissed');
+  // a launched candidate is live history — dismissing it would rewrite the past
+  assert.equal(store.find(launched.id).status, 'launched');
+  assert.equal(store.find(launched.id).sessionPid, 4242);
+});
+
+test('bulk clear: deletes whatever it is given, whatever its status', () => {
+  fresh();
+  const pending = store.add({ cwd: '/tmp', prompt: 'a' });
+  const launched = store.add({ cwd: '/tmp', prompt: 'b' });
+  const keep = store.add({ cwd: '/tmp', prompt: 'c' });
+  store.markLaunched(launched.id);
+
+  const r = store.bulk('clear', [pending.id, launched.id]);
+
+  assert.equal(r.done, 2);
+  assert.equal(r.skipped.length, 0);
+  assert.equal(store.find(pending.id), null);
+  assert.equal(store.find(launched.id), null);
+  assert.equal(store.list().length, 1);
+  assert.equal(store.list()[0].id, keep.id); // untouched by an unrelated selection
+});
+
+test('bulk persists once, and the whole change survives a reload', () => {
+  fresh();
+  const a = store.add({ cwd: '/tmp', prompt: 'a' });
+  const b = store.add({ cwd: '/tmp', prompt: 'b' });
+
+  store.bulk('dismiss', [a.id, b.id]);
+  store._reset(); // drop the in-memory cache: only what reached disk comes back
+
+  assert.equal(store.find(a.id).status, 'dismissed');
+  assert.equal(store.find(b.id).status, 'dismissed');
+});
+
+test('bulk with nothing to do leaves the file alone', () => {
+  fresh();
+  store.add({ cwd: '/tmp', prompt: 'a' });
+  const before = fs.readFileSync(FILE, 'utf8');
+
+  const r = store.bulk('dismiss', ['cand_nope']);
+
+  assert.equal(r.done, 0);
+  assert.deepEqual(r.notFound, ['cand_nope']);
+  assert.equal(fs.readFileSync(FILE, 'utf8'), before);
+});
+
+test('bulk rejects an unknown action and a non-array id list', () => {
+  fresh();
+  const c = store.add({ cwd: '/tmp', prompt: 'a' });
+  assert.throws(() => store.bulk('launch', [c.id]), /unknown bulk action/);
+  assert.throws(() => store.bulk('dismiss', c.id), /ids must be an array/);
+  assert.equal(store.find(c.id).status, 'pending'); // nothing happened
+});
+
+test('bulk ignores duplicate ids rather than double-counting them', () => {
+  fresh();
+  const a = store.add({ cwd: '/tmp', prompt: 'a' });
+  const r = store.bulk('dismiss', [a.id, a.id, a.id]);
+  assert.equal(r.done, 1);
+});

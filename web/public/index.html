@@ -92,6 +92,21 @@
       <input id="cand-filter" type="search" autocomplete="off"
              placeholder="Filter candidates — skill, prompt, reason, directory…">
       <span id="cand-count" class="cand-count"></span>
+      <!-- The toolbar becomes the triage bar in place: the filter stays put,
+           because the filter is what defined the selection. The verbs appear
+           only once something is selected, and take over from ＋ New candidate. -->
+      <div class="bulk-bar">
+        <span class="bulk-selall">
+          <input class="pick" id="cand-selall" type="checkbox"
+                 title="Select everything the filter is showing">
+          <label for="cand-selall">All shown</label>
+        </span>
+        <div id="cand-bulk-verbs" class="bulk-verbs" hidden>
+          <button id="cand-bulk-dismiss" class="bulk-btn"></button>
+          <button id="cand-bulk-clear" class="bulk-btn danger"></button>
+          <button id="cand-bulk-cancel" class="ghost-btn">Cancel</button>
+        </div>
+      </div>
       <button id="new-candidate-btn" class="primary-btn">＋ New candidate</button>
     </div>
     <main id="cand-grid"></main>
@@ -180,6 +195,7 @@
     <section class="cand-card">
       <div class="cand-body">
         <div class="cand-head">
+          <input class="pick cand-pick" type="checkbox" aria-label="Select this candidate">
           <span class="cand-skill chip"></span>
           <span class="cand-priority chip" title="Priority — higher launches first"></span>
           <span class="cand-statebadge chip"></span>
@@ -620,6 +636,22 @@
         <button type="submit" id="nc-submit" class="btn primary">Add candidate</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Confirmation for the one irreversible bulk verb. Dismiss is reversible and
+       just happens; Clear deletes, so it asks once — and the confirming button
+       keeps the same verb and count you clicked, which a native confirm() can't do. -->
+  <dialog id="bulk-confirm-dialog" class="app-modal">
+    <div class="m-head">
+      <div class="m-eyebrow"><span class="dot"></span> <span>Confirm</span></div>
+      <h2 class="m-title" id="bc-title">Clear candidates?</h2>
+      <button type="button" class="m-close" id="bc-close" title="Close" aria-label="Close">✕</button>
+    </div>
+    <div class="m-body"><p class="bc-copy" id="bc-copy"></p></div>
+    <div class="m-foot">
+      <button type="button" id="bc-cancel" class="btn ghost">Cancel</button>
+      <button type="button" id="bc-go" class="btn danger"></button>
+    </div>
   </dialog>
 
   <!-- full-reply popup: opened by clicking a Claude entry in a feed or the reply banner -->
