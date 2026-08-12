@@ -36,8 +36,11 @@
   <!-- ===== Sessions view ===== -->
   <div id="sessions-view">
 
-  <!-- per-tab create action, mirroring the Candidates tab's "＋ New candidate" -->
+  <!-- per-tab filter + create action, mirroring the Candidates tab's toolbar -->
   <div class="sessions-toolbar">
+    <input id="sess-filter" type="search" autocomplete="off"
+           placeholder="Find a session — title, repo, directory, prompt, pid…">
+    <span id="sess-count" class="sess-count"></span>
     <button id="new-session-btn" class="primary-btn">＋ New Session</button>
   </div>
 
@@ -74,9 +77,12 @@
 
   <div id="empty" class="empty" hidden>
     No sessions to show.<br>
-    <span>Start one with <code>claude</code> in any terminal, use <b>＋ New Session</b> above,
-    or clear the active filter.</span>
+    <span>Start one with <code>claude</code> in any terminal, or use
+    <b>＋ New Session</b> above.</span>
   </div>
+  <!-- distinct from #empty: sessions exist, the filter is what is hiding them,
+       so "start one with claude" would be the wrong advice here -->
+  <div id="sess-nomatch" class="empty" hidden>No sessions match your filter.</div>
 
   </div><!-- /#sessions-view -->
 

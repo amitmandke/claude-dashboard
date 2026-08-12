@@ -194,6 +194,16 @@ a function testable, export it (several are exported solely for tests, noted as 
   token counts per `message.id`, never per line — a per-line sum overcounts 3-5×.
 - Interaction features are iTerm2-only; observation works with any terminal.
 - First osascript call triggers a one-time macOS "control iTerm2" permission dialog.
+- **The Sessions tab has two filters that compose (AND), and the tiles never count the
+  filtered view.** The stat tiles are a *status* filter; `#sess-filter` is a substring filter
+  over title/repo/path/pid/**starting prompt** — both fold into the one `card.hidden` line in
+  `updateCard`, so the grid is never rebuilt to filter (cards persist; see the next bullet).
+  Two traps: **`s.firstPrompt` is `{text, at}`, not a string** — joining the object into the
+  haystack silently puts `[object Object]` in every session (so "object" matches all, and
+  prompt search matches nothing); and the tiles must keep showing what is actually *running*,
+  which is why the toolbar carries `N sessions · M shown` and the grid has two empty states
+  (`#empty` = truly none, `#sess-nomatch` = filtered out). `lastAssistantText` is deliberately
+  NOT matched — a hit with no visible cause on a collapsed card reads as a bug.
 - **SSE-driven grids must not rebuild unless something structural changed.** The snapshot arrives
   every 1.5s; `grid.textContent = ''` + rebuild throws away scroll position, hover and focus, which
   reads as the tab yanking you to the top mid-scroll. Both grids guard against it with a signature of
