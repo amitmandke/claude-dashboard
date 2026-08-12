@@ -35,6 +35,13 @@ query($q: String!, $me: String!, $first: Int!) {
         repository { nameWithOwner }
         commits(last: 1) { nodes { commit { oid committedDate } } }
         reviews(author: $me, last: 1) { nodes { submittedAt state } }
+        timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT], last: 20) {
+          nodes {
+            __typename
+            ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } }
+            ... on ReviewRequestRemovedEvent { createdAt requestedReviewer { ... on User { login } } }
+          }
+        }
       }
     }
   }
@@ -65,11 +72,39 @@ function runGh(args, { bin = DEFAULT_BIN, timeoutMs = DEFAULT_TIMEOUT_MS, allowP
 }
 
 /**
+ * When was *my* review last asked for — the timestamp of the newest
+ * REVIEW_REQUESTED_EVENT naming me.
+ *
+ * There is no field for this: `reviewRequests` lists who is currently on the
+ * hook but carries no timestamp, so the timeline is the only source. Two details
+ * that matter:
+ *
+ *   - a *team* request has no `login` (the inline fragment yields `{}`) and is
+ *     deliberately not a personal ask — only my own login counts;
+ *   - if my newest event is a REMOVAL, the answer is null. A request that was
+ *     withdrawn must not read as outstanding, or the `reviewed-by:@me` query
+ *     would resurface a PR nobody is waiting on me for.
+ */
+function myReviewRequestedAt(n, me) {
+  const login = String(me || '').toLowerCase();
+  if (!login) return null;
+  let latest = null;
+  for (const ev of (n.timelineItems && n.timelineItems.nodes) || []) {
+    if (!ev || !ev.createdAt) continue;
+    const who = (ev.requestedReviewer && ev.requestedReviewer.login) || '';
+    if (String(who).toLowerCase() !== login) continue;
+    if (!latest || ev.createdAt > latest.createdAt) latest = ev;
+  }
+  if (!latest) return null;
+  return latest.__typename === 'ReviewRequestRemovedEvent' ? null : latest.createdAt;
+}
+
+/**
  * Flatten one GraphQL node into the flat shape `reviews.js` expects. A review
  * with a null `submittedAt` is PENDING (started, never submitted) and must read
  * as "not reviewed", which falling through to null achieves.
  */
-function normalizeNode(n) {
+function normalizeNode(n, me) {
   if (!n || !n.repository || !n.number) return null;
   const commit = ((n.commits && n.commits.nodes) || [])[0];
   const review = ((n.reviews && n.reviews.nodes) || [])[0];
@@ -86,6 +121,7 @@ function normalizeNode(n) {
     tipCommittedDate: (commit && commit.commit && commit.commit.committedDate) || null,
     myLastReviewAt: (review && review.submittedAt) || null,
     myLastReviewState: (review && review.state) || '',
+    myReviewRequestedAt: myReviewRequestedAt(n, me),
   };
 }
 
@@ -161,7 +197,7 @@ function parseStates(stdout, refs) {
 }
 
 /** Exported for tests: parse a raw `gh api graphql` response into PRs. */
-function parseQueue(stdout) {
+function parseQueue(stdout, me) {
   let payload;
   try {
     payload = JSON.parse(stdout);
@@ -175,7 +211,7 @@ function parseQueue(stdout) {
   if (!search) throw new Error('gh api graphql: unexpected response shape');
   return {
     total: search.issueCount || 0,
-    prs: (search.nodes || []).map(normalizeNode).filter(Boolean),
+    prs: (search.nodes || []).map((n) => normalizeNode(n, me)).filter(Boolean),
   };
 }
 
@@ -206,7 +242,7 @@ function createClient({ bin = DEFAULT_BIN, timeoutMs = DEFAULT_TIMEOUT_MS, run =
         ],
         { bin, timeoutMs }
       );
-      return parseQueue(out);
+      return parseQueue(out, login);
     },
 
     /**
@@ -226,5 +262,6 @@ function createClient({ bin = DEFAULT_BIN, timeoutMs = DEFAULT_TIMEOUT_MS, run =
 }
 
 module.exports = {
-  createClient, parseQueue, normalizeNode, QUEUE_QUERY, runGh, buildStatesQuery, parseStates,
+  createClient, parseQueue, normalizeNode, myReviewRequestedAt, QUEUE_QUERY, runGh,
+  buildStatesQuery, parseStates,
 };

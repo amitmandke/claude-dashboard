@@ -85,13 +85,35 @@ function refOf(pr) {
 }
 
 /**
+ * Has the author asked me back since I last reviewed?
+ *
+ * The second of the two ways a re-review starts, and the one new commits cannot
+ * express: I leave comments, the author *answers them* and re-requests me
+ * without pushing anything (tenant-manager#827/#828, live — the tip commit was
+ * older than my review, so the commit rule alone said "nothing changed" and the
+ * ask was silently dropped). Requested-before-my-review is the ordinary opening
+ * ask and is not a re-review.
+ */
+function reReviewRequested(pr) {
+  if (!pr || !pr.myLastReviewAt || !pr.myReviewRequestedAt) return false;
+  return pr.myReviewRequestedAt > pr.myLastReviewAt; // ISO-8601 Z sorts lexicographically
+}
+
+/** True when a re-request is the ONLY thing that moved — no code to diff. */
+function reRequestedWithoutCommits(pr) {
+  if (!reReviewRequested(pr)) return false;
+  return !(pr.tipCommittedDate && pr.tipCommittedDate > pr.myLastReviewAt);
+}
+
+/**
  * Does this PR still want *my* review?
  *
  * `--review-requested=@me` does NOT exclude PRs I have already reviewed (2 of 27
  * in the real queue were), so filter explicitly:
  *
  *   - never reviewed by me      -> include
- *   - reviewed, new commits     -> include (this is the re-review case)
+ *   - reviewed, new commits     -> include (re-review, the code moved)
+ *   - reviewed, re-requested    -> include (re-review, the conversation moved)
  *   - reviewed, nothing new     -> skip
  *
  * Other reviewers are deliberately never consulted: whether someone else
@@ -99,6 +121,7 @@ function refOf(pr) {
  */
 function needsMyReview(pr) {
   if (!pr || !pr.myLastReviewAt) return true;
+  if (reReviewRequested(pr)) return true;
   if (!pr.tipCommittedDate) return false; // reviewed, and we can't prove anything changed
   return pr.tipCommittedDate > pr.myLastReviewAt; // ISO-8601 Z strings sort lexicographically
 }
@@ -212,15 +235,25 @@ function groupByStory(prs, { maxGroupSize = DEFAULT_MAX_GROUP_SIZE, projects = [
 }
 
 /**
- * Dedupe key that encodes *review state*, not just identity: the group plus each
- * PR's tip commit. New commits produce a new key, so a re-review surfaces as a
- * fresh candidate; an unchanged PR produces the key already on record and is
- * suppressed whatever that candidate's status became. That is what makes "skip
- * what I've reviewed" and "show it again when it changes" one rule.
+ * Dedupe key that encodes *review state*, not just identity: the group, each
+ * PR's tip commit, and — only when it is newer than my review — the moment my
+ * review was re-requested. Anything that moves mints a new key, so a re-review
+ * surfaces as a fresh candidate; an unchanged PR produces the key already on
+ * record and is suppressed whatever that candidate's status became. That is what
+ * makes "skip what I've reviewed" and "show it again when it changes" one rule.
+ *
+ * The re-request stamp is appended CONDITIONALLY, and that is load-bearing: a PR
+ * with no outstanding re-request must key exactly as it did before this stamp
+ * existed, or every key already in `seen` stops matching and the whole queue
+ * re-stages as new work on the first poll after an upgrade.
  */
 function dedupeKeyFor(group) {
   const tips = group.prs
-    .map((p) => `${refOf(p)}@${String(p.tipOid || '').slice(0, 7)}`)
+    .map((p) => {
+      const tip = `${refOf(p)}@${String(p.tipOid || '').slice(0, 7)}`;
+      // compact ISO (20260812T230411Z) — a key is read by humans in state files
+      return reReviewRequested(p) ? `${tip}!${String(p.myReviewRequestedAt).replace(/[-:]/g, '')}` : tip;
+    })
     .sort();
   const head = group.storyKey || refOf(group.prs[0]);
   return `gh:${head}:${tips.join('+')}`;
@@ -259,21 +292,48 @@ function buildPrompt(group, { template = DEFAULT_PROMPT_TEMPLATE, repoPaths = {}
   else if (distinct.length === 1 && pairs.length === repos.length) skills = `Use the ${distinct[0]} skill.`;
   else skills = ['Skills to use:', ...pairs.map(([r, s]) => `  ${r} -> ${s}`)].join('\n');
 
+  // The `{coherence}` slot carries every closing note, so a custom template keeps
+  // working when a new note is added.
+  const notes = [];
+  if (group.digest) notes.push('These are batched routine PRs — review and merge each on its own merits.');
+  else if (group.prs.length > 1) notes.push('These PRs are part of one story — review them together for coherence.');
+
+  // A re-request with no push is a different job from a re-review of new code:
+  // there is no diff to read, the movement is in the conversation. Say so, or the
+  // launched session diffs two identical trees and reports nothing changed.
+  const answered = group.prs.filter(reRequestedWithoutCommits).map(refOf);
+  if (answered.length) {
+    notes.push(
+      `Your review was re-requested on ${answered.join(', ')} with no new commits — the author has ` +
+      'replied to your review comments. Start from the PR conversation, not the diff, and check ' +
+      'whether each of your earlier comments is actually resolved.'
+    );
+  }
+
   return template
     .replace('{story}', group.storyKey ? ` for story ${group.storyKey}` : '')
     .replace('{prs}', prLines)
     .replace('{repos}', repoLines)
     .replace('{skills}', skills)
-    .replace(
-      '{coherence}',
-      group.digest
-        ? '\nThese are batched routine PRs — review and merge each on its own merits.'
-        : group.prs.length > 1
-          ? '\nThese PRs are part of one story — review them together for coherence.'
-          : ''
-    )
+    .replace('{coherence}', notes.length ? `\n${notes.join('\n')}` : '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * The one line on the card. It names *why the card exists now*, because the three
+ * cases want different things from the reader: a first look, a look at new code,
+ * or an answer to comments I already left.
+ */
+function reasonFor(group) {
+  const what = group.digest
+    ? `${group.prs.length} PRs in one batch`
+    : group.storyKey
+      ? `story ${group.storyKey} (${group.prs.length} PRs)`
+      : refOf(group.prs[0]);
+  if (group.prs.some(reReviewRequested)) return `GitHub re-review requested — ${what}`;
+  if (!group.digest && group.prs.some((p) => p.myLastReviewAt)) return `GitHub re-review, new commits — ${what}`;
+  return `GitHub review requested — ${what}`;
 }
 
 /** confidence-free priority: a grouped story outranks a lone PR, re-reviews first. */
@@ -353,12 +413,7 @@ function planCandidates(
       cwd,
       skill,
       prompt: buildPrompt(group, { template, repoPaths, skillsByRepo }),
-      reason:
-        (group.digest
-          ? `GitHub review requested — ${group.prs.length} PRs in one batch`
-          : group.storyKey
-            ? `GitHub review requested — story ${group.storyKey} (${group.prs.length} PRs)`
-            : `GitHub review requested — ${refOf(group.prs[0])}`) + (cwd ? '' : ' [pick a repo before launch]'),
+      reason: reasonFor(group) + (cwd ? '' : ' [pick a repo before launch]'),
       priority: priorityFor(group),
       prRefs: group.prs.map((p) => ({ repo: p.repo, number: p.number })),
       storyKey: group.storyKey,
@@ -417,6 +472,9 @@ module.exports = {
   storyKeysOf,
   refOf,
   needsMyReview,
+  reReviewRequested,
+  reRequestedWithoutCommits,
+  reasonFor,
   isBotAuthor,
   authorAllowed,
   selectPrs,
