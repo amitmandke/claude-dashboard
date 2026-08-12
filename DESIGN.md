@@ -481,6 +481,17 @@ tip commit, and your own last review — because the alternative is one subproce
   *your* review is outstanding. Drafts and bot authors are excluded by default, and
   `includeAuthors` inverts the author filter so a second watcher can batch exactly the bot PRs
   the first one drops, with no code change.
+- **Retiring finished work.** A pending card is replaced when a fresh snapshot supersedes it — but
+  that only happens when something *stages*, and a merged PR leaves the search queue entirely, so
+  nothing stages, nothing supersedes, and pending cards are exempt from retention pruning. The card
+  would outlive the PR indefinitely. So each pass also looks the other way: a pending card of this
+  watcher whose PRs have **all** left the queue is a *suspect*, and one aliased GraphQL call resolves
+  their real states. Only a card whose every PR came back `MERGED` or `CLOSED` is retired. Absence
+  from the queue is never enough on its own — a withdrawn review request drops an open PR out just
+  the same — and a PR that could not be resolved at all keeps its card, because a stale card costs a
+  click while deleting a live one loses work someone is waiting on. The lookup is capped per pass and
+  logs what it deferred; a failure there is logged and skipped rather than failing a pass that has
+  already staged.
 - **Story grouping.** Multiple PRs on one story are reviewed better together, so PRs citing a
   shared issue key become one candidate. Grouping is **key-centric, not transitive**: a group
   *is* the set of PRs citing one key, which guarantees every multi-PR group can be named and

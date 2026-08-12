@@ -370,7 +370,49 @@ function planCandidates(
   return { candidates: out, groups: groups.length, selected: selected.length, suppressed };
 }
 
+/**
+ * Pending cards whose PRs have all left the open queue — the candidates for
+ * retirement, to be confirmed against GitHub before anything is removed.
+ *
+ * Supersede only fires when something new STAGES for a PR. A merged PR leaves
+ * the search queue entirely, so nothing stages for it, nothing supersedes it,
+ * and pending cards are exempt from retention pruning — so the card sits on the
+ * board forever. This finds the ones worth asking about.
+ *
+ * A card holding several PRs (a story group, a digest) is a suspect only when
+ * EVERY one of its PRs is gone: while any is still open the work is still live.
+ */
+function retireSuspects(pending, queueKeys) {
+  const inQueue = queueKeys instanceof Set ? queueKeys : new Set(queueKeys || []);
+  return (pending || []).filter((c) => {
+    const refs = (c.ref && c.ref.prRefs) || [];
+    if (!refs.length) return false; // nothing to check against — never touch it
+    return refs.every((r) => !inQueue.has(`${r.repo}#${r.number}`));
+  });
+}
+
+/**
+ * Should this suspect actually be retired, given the states GitHub reported?
+ *
+ * Absence from the queue is NOT proof the work is done — a withdrawn review
+ * request drops an open PR out just the same, and so does a search that simply
+ * did not reach it. So the answer is yes only when every one of the card's PRs
+ * resolved to a terminal state. An unresolved PR (lookup failed, repo access
+ * lost) keeps the card: leaving a stale card costs a click, deleting a live one
+ * silently loses work someone is waiting on.
+ */
+function shouldRetire(candidate, states) {
+  const refs = (candidate.ref && candidate.ref.prRefs) || [];
+  if (!refs.length) return false;
+  return refs.every((r) => {
+    const s = states[`${r.repo}#${r.number}`];
+    return s === 'MERGED' || s === 'CLOSED';
+  });
+}
+
 module.exports = {
+  retireSuspects,
+  shouldRetire,
   extractJiraKeys,
   storyKeysOf,
   refOf,

@@ -41,6 +41,11 @@ const DAY_MS = 86400000;
 // `seen` map, so they inherit its existing TTL pruning for free. A github watcher
 // has no real channels.
 const GH_SEEN_SCOPE = 'gh';
+// Bound on the retire lookup per pass: a normal board holds a handful of stale
+// cards, so a bigger number means something is wrong and we should not aim a
+// giant aliased query at GitHub. Over the cap, the pass logs what it skipped
+// (the rest are re-checked next tick) rather than silently covering less.
+const RETIRE_MAX_PER_TICK = 25;
 
 /**
  * Faults that mean "the network went away", not "this watcher is broken". A
@@ -550,9 +555,47 @@ async function runGithubWatcherOnce(watcher, deps) {
     }
   }
 
+  // Retire pending cards whose PRs have since merged or closed. Supersede above
+  // only fires when something new STAGES for a PR — but a merged PR leaves the
+  // search queue entirely, so nothing stages, nothing supersedes, and pending
+  // cards never prune. The card would sit on the board forever.
+  //
+  // Absence from the queue is only a SUSPICION (a withdrawn review request drops
+  // an open PR out too), so the suspects are confirmed against GitHub in one
+  // batched call, and only terminal states retire anything.
+  let retired = 0;
+  try {
+    const mine = candidates.list().filter(
+      (c) => c.status === 'pending' && c.source === 'github' && c.ref && c.ref.watcher === name
+    );
+    let suspects = reviews.retireSuspects(mine, seen);
+    if (suspects.length > RETIRE_MAX_PER_TICK) {
+      log(`ACTION watcher name=${name} note=retire-capped suspects=${suspects.length} checking=${RETIRE_MAX_PER_TICK}`);
+      suspects = suspects.slice(0, RETIRE_MAX_PER_TICK);
+    }
+    if (suspects.length && typeof ghClient.prStates === 'function') {
+      // one lookup per distinct PR, however many cards reference it
+      const refs = [...new Map(
+        suspects.flatMap((c) => c.ref.prRefs || []).map((r) => [`${r.repo}#${r.number}`, r])
+      ).values()];
+      const states = await ghClient.prStates(refs);
+      for (const c of suspects) {
+        if (!reviews.shouldRetire(c, states)) continue;
+        const how = (c.ref.prRefs || [])
+          .map((r) => `${r.repo}#${r.number}=${states[`${r.repo}#${r.number}`]}`).join(',');
+        candidates.remove(c.id);
+        retired++;
+        log(`ACTION watcher name=${name} note=retired id=${c.id} ${how}`);
+      }
+    }
+  } catch (e) {
+    // Never fail a pass over cleanup — the staging above already happened.
+    log(`ERROR watcher name=${name} retire: ${e.message}`);
+  }
+
   log(
     `ACTION watcher name=${name} note=reviewed queue=${total} eligible=${plan.selected} ` +
-    `groups=${plan.groups} staged=${staged} suppressed=${plan.suppressed}`
+    `groups=${plan.groups} staged=${staged} suppressed=${plan.suppressed} retired=${retired}`
   );
 
   if (retention) {

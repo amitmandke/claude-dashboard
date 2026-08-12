@@ -179,6 +179,16 @@ a function testable, export it (several are exported solely for tests, noted as 
   (three for one PR, live); launched/dismissed cards are history and stay. `gh.js` is coverage-excluded (pure I/O, like `slack.js`); keep the decisions in
   `reviews.js`, which is unit-tested at 100% lines. Skills come from the repo's build file, never
   the LLM — that is what keeps this producer alive when the classifier is down.
+  **(f)** supersede only fires when something new STAGES, so it can never clean up after a PR that
+  merged: a merged PR leaves the search queue entirely, nothing stages, and pending cards are exempt
+  from retention pruning — the card would sit on the board forever. Hence the retire pass
+  (`retireSuspects` → `ghClient.prStates` → `shouldRetire`): a pending card of *this* watcher whose
+  PRs are ALL absent from the queue is only a **suspect**, confirmed in one aliased GraphQL call, and
+  retired only when every PR resolved to `MERGED`/`CLOSED`. Absence is not proof — a withdrawn review
+  request drops an open PR out too — and an *unresolved* lookup must keep the card: a stale card costs
+  a click, deleting a live one loses work someone is waiting on. Capped at `RETIRE_MAX_PER_TICK` with
+  the overflow logged (never a silent cap), and the whole pass is wrapped so cleanup can't fail a tick
+  that already staged.
 - **Never spawn `claude` by bare name — resolve it.** `config.resolveClaudeBin()` probes
   `CLAUDE_DASH_CLAUDE_BIN` → `~/.local/bin/claude` (native installer symlink) → `which` → the
   legacy `~/.claude/local/claude`. The launchd plist pins a minimal PATH that does **not**

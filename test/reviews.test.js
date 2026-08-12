@@ -555,3 +555,92 @@ test("groupMode 'all': empty selection stages nothing", () => {
   const out = reviews.planCandidates([pr({ isDraft: true })], { groupMode: 'all' });
   assert.equal(out.candidates.length, 0);
 });
+
+// ---- retiring cards whose PR already merged --------------------------------
+
+/** Terse pending-candidate factory shaped like the store's github cards. */
+function card(prRefs, over = {}) {
+  return {
+    id: 'cand_' + prRefs.map((r) => r.number).join('_'),
+    status: 'pending',
+    source: 'github',
+    ref: { watcher: 'reviews', prRefs },
+    ...over,
+  };
+}
+
+test('retireSuspects: a card is suspect only when ALL its PRs left the queue', () => {
+  const inQueue = new Set(['acme/widgets#1', 'acme/widgets#3']);
+  const stillQueued = card([{ repo: 'acme/widgets', number: 1 }]);
+  const gone = card([{ repo: 'acme/widgets', number: 2 }]);
+  const halfGone = card([{ repo: 'acme/widgets', number: 2 }, { repo: 'acme/widgets', number: 3 }]);
+
+  const out = reviews.retireSuspects([stillQueued, gone, halfGone], inQueue);
+
+  // a story group with one PR still open is still live work
+  assert.deepEqual(out.map((c) => c.id), [gone.id]);
+});
+
+test('retireSuspects: a card with no PR refs is never touched', () => {
+  const manual = card([], { ref: { watcher: 'reviews' } });
+  assert.deepEqual(reviews.retireSuspects([manual], new Set()), []);
+});
+
+test('shouldRetire: only terminal states retire; OPEN or unknown keeps the card', () => {
+  const c = card([{ repo: 'acme/widgets', number: 2 }]);
+  assert.equal(reviews.shouldRetire(c, { 'acme/widgets#2': 'MERGED' }), true);
+  assert.equal(reviews.shouldRetire(c, { 'acme/widgets#2': 'CLOSED' }), true);
+  // absence from the queue is not proof — a withdrawn review request does that too
+  assert.equal(reviews.shouldRetire(c, { 'acme/widgets#2': 'OPEN' }), false);
+  // lookup failed / repo access lost: leaving a stale card beats deleting live work
+  assert.equal(reviews.shouldRetire(c, {}), false);
+});
+
+test('shouldRetire: a grouped card needs every PR terminal', () => {
+  const c = card([{ repo: 'acme/widgets', number: 2 }, { repo: 'acme/widgets', number: 4 }]);
+  assert.equal(reviews.shouldRetire(c, { 'acme/widgets#2': 'MERGED', 'acme/widgets#4': 'OPEN' }), false);
+  assert.equal(reviews.shouldRetire(c, { 'acme/widgets#2': 'MERGED', 'acme/widgets#4': 'CLOSED' }), true);
+  assert.equal(reviews.shouldRetire(c, { 'acme/widgets#2': 'MERGED' }), false); // #4 unresolved
+});
+
+test('buildStatesQuery: one aliased field per PR, owner and name split out', () => {
+  const q = gh.buildStatesQuery([
+    { repo: 'acme/widgets', number: 12 },
+    { repo: 'acme/gizmos', number: 7 },
+  ]);
+  assert.match(q, /p0: repository\(owner: "acme", name: "widgets"\) \{ pullRequest\(number: 12\)/);
+  assert.match(q, /p1: repository\(owner: "acme", name: "gizmos"\) \{ pullRequest\(number: 7\)/);
+});
+
+test('parseStates: maps aliases back to repo#number, dropping what did not resolve', () => {
+  const refs = [
+    { repo: 'acme/widgets', number: 12 },
+    { repo: 'acme/gizmos', number: 7 },
+    { repo: 'acme/gone', number: 9 },
+  ];
+  // The literal shape a real `gh` prints for a partly-resolvable batch: the JSON
+  // body, then gh's own one-line complaint appended AFTER it (and a non-zero
+  // exit, handled by runGh's allowPartial). Captured from a live call.
+  const stdout = JSON.stringify({
+    data: { p0: { pullRequest: { state: 'MERGED' } }, p1: { pullRequest: { state: 'OPEN' } }, p2: null },
+    errors: [{ type: 'NOT_FOUND', path: ['p2'], message: "Could not resolve to a Repository with the name 'acme/gone'." }],
+  }) + "\ngh: Could not resolve to a Repository with the name 'acme/gone'.\n";
+
+  const states = gh.parseStates(stdout, refs);
+
+  assert.deepEqual(states, { 'acme/widgets#12': 'MERGED', 'acme/gizmos#7': 'OPEN' });
+  // the unresolved one is absent, not guessed — shouldRetire then keeps that card
+  assert.equal(reviews.shouldRetire({ ref: { prRefs: [refs[2]] } }, states), false);
+});
+
+test('parseStates: a } inside a PR title cannot truncate the response early', () => {
+  const refs = [{ repo: 'acme/widgets', number: 12 }];
+  const stdout = JSON.stringify({
+    data: { p0: { pullRequest: { state: 'MERGED', title: 'fix the } brace' } } },
+  }) + '\ngh: some trailing noise\n';
+  assert.deepEqual(gh.parseStates(stdout, refs), { 'acme/widgets#12': 'MERGED' });
+});
+
+test('parseStates: genuinely unusable output still throws rather than retiring nothing quietly', () => {
+  assert.throws(() => gh.parseStates('gh: command failed\n', [{ repo: 'a/b', number: 1 }]), /non-JSON/);
+});
