@@ -787,6 +787,22 @@ function candMatches(c, q) {
   return hay.includes(q);
 }
 
+/**
+ * The cards currently on screen — the ONE definition of "shown".
+ *
+ * Both filters, in one place, because everything that acts on the visible set has
+ * to agree on what that is: the grid, `☑ All shown`, and the hidden-count
+ * disclosure. This started as three separate expressions and the select-all copy
+ * was missing the status filter — so ticking it after picking a status selected
+ * the whole board. Don't re-inline this.
+ */
+function shownCandidates(list) {
+  const q = candFilter.trim().toLowerCase();
+  return (list || []).filter(
+    (c) => (candStatus === 'all' || c.status === candStatus) && candMatches(c, q)
+  );
+}
+
 // Status is a SEPARATE filter, not another word in the haystack above: a card
 // whose prompt says "dismissed" must not answer to the Dismissed tab, or
 // "select all shown → Clear" would take something you weren't looking at.
@@ -995,9 +1011,7 @@ function renderCandidates(data) {
   badge.hidden = pending.length === 0;
 
   const q = candFilter.trim().toLowerCase();
-  const filtered = list.filter(
-    (c) => (candStatus === 'all' || c.status === candStatus) && candMatches(c, q)
-  );
+  const filtered = shownCandidates(list);
 
   // status counts come from the WHOLE list, never the filtered view — the chip
   // has to say how many exist, not how many survived the other filter
@@ -1080,9 +1094,7 @@ function el(tag, text) {
 }
 
 document.getElementById('cand-selall').addEventListener('change', (e) => {
-  const q = candFilter.trim().toLowerCase();
-  const shown = ((lastData && lastData.candidates) || []).filter((c) => candMatches(c, q));
-  for (const c of shown) {
+  for (const c of shownCandidates((lastData && lastData.candidates) || [])) {
     if (e.target.checked) candSel.add(c.id); else candSel.delete(c.id);
   }
   if (lastData) renderCandidates(lastData);
@@ -1096,10 +1108,7 @@ document.getElementById('cand-bulk-cancel').addEventListener('click', () => {
 document.getElementById('cand-bulk-dismiss').addEventListener('click', () => runBulk('dismiss'));
 document.getElementById('cand-bulk-clear').addEventListener('click', async () => {
   const n = candSel.size;
-  const q = candFilter.trim().toLowerCase();
-  const shown = new Set(((lastData && lastData.candidates) || [])
-    .filter((c) => (candStatus === 'all' || c.status === candStatus) && candMatches(c, q))
-    .map((c) => c.id));
+  const shown = new Set(shownCandidates((lastData && lastData.candidates) || []).map((c) => c.id));
   const hidden = [...candSel].filter((id) => !shown.has(id)).length;
 
   const ok = await confirmBulk(
