@@ -204,6 +204,14 @@ a function testable, export it (several are exported solely for tests, noted as 
   which is why the toolbar carries `N sessions · M shown` and the grid has two empty states
   (`#empty` = truly none, `#sess-nomatch` = filtered out). `lastAssistantText` is deliberately
   NOT matched — a hit with no visible cause on a collapsed card reads as a bug.
+- **Bulk End is client-side and sequential — there is no bulk sessions endpoint.** Unlike
+  candidates (one JSON file, so one atomic write), each end drives a real terminal through
+  AppleScript; firing a dozen concurrently makes that backend flaky, so `sess-bulk-end` awaits
+  `POST /api/sessions/:pid/end` one at a time and tallies failures by project name. The
+  confirmation rule is the per-card rule applied once to the set: `done` sessions close silently,
+  anything else confirms. A picked session card gets the accent rail **only** — never an accent
+  border, which would overwrite the status border (red = waiting, green = working) that tells you
+  what you are about to kill.
 - **Bulk actions send an explicit id list — the server never interprets "all".** `☑ All shown`
   is a client-side convenience that ticks exactly what the filter is rendering, so a bulk verb
   can only reach cards that were on screen and counted; there is no "all" on the wire and no

@@ -16,6 +16,7 @@ let lastData = null;
 // Unlike the candidates filter this one survives a reload: the sessions tab is a
 // standing view you leave open, so re-typing the filter after every refresh is
 // the wrong default.
+const sessSel = new Set(); // pids selected for a bulk end; see renderSessBulkBar
 const SESS_FILTER_KEY = 'claude-dashboard.sessionFilter';
 let sessFilter = '';
 try { sessFilter = localStorage.getItem(SESS_FILTER_KEY) || ''; } catch { /* private mode */ }
@@ -193,6 +194,15 @@ function buildCard(s) {
   const node = template.content.cloneNode(true);
   const card = node.querySelector('.card');
   card.id = 'card-' + s.pid;
+
+  // Selection lives in sessSel (pids), not the DOM. Session cards persist across
+  // renders unlike candidate cards, but a card is still destroyed when its
+  // session ends — and the selection has to outlive a re-render either way.
+  const pick = card.querySelector('.sess-pick');
+  pick.addEventListener('change', () => {
+    if (pick.checked) sessSel.add(s.pid); else sessSel.delete(s.pid);
+    if (lastData) render(lastData);
+  });
 
   const input = card.querySelector('.send-input');
   const enterBox = card.querySelector('.press-enter');
@@ -419,6 +429,10 @@ function updateCard(card, s, now) {
   card.hidden = (activeFilter !== 'all' && st !== activeFilter) ||
                 !sessionMatches(s, sessFilter.trim().toLowerCase());
 
+  const pick = card.querySelector('.sess-pick');
+  pick.checked = sessSel.has(s.pid);
+  card.classList.toggle('picked', pick.checked);
+
   // observe-only when the hosting terminal has no interaction backend
   const interactive = !!s.terminal;
   card.classList.toggle('readonly', !interactive);
@@ -429,6 +443,103 @@ function updateCard(card, s, now) {
     card.querySelector('.send-input').placeholder = 'Observe-only — this terminal is not scriptable';
   }
 }
+
+// ------------------------------------------------------- bulk end (Sessions)
+
+// The same triage bar as Candidates, with one verb — ending is the only
+// destructive thing you can do to a session. The warning rides on the button
+// rather than waiting in the dialog: you should know the cost before you commit
+// to reading a confirmation.
+function renderSessBulkBar(sessions, visible) {
+  const alive = new Set(sessions.map((s) => s.pid));
+  for (const pid of sessSel) if (!alive.has(pid)) sessSel.delete(pid);
+
+  const shown = sessions.filter((s) => {
+    const card = document.getElementById('card-' + s.pid);
+    return card && !card.hidden;
+  });
+  const selectedShown = shown.filter((s) => sessSel.has(s.pid)).length;
+  const n = sessSel.size;
+
+  const selAll = document.getElementById('sess-selall');
+  selAll.checked = shown.length > 0 && selectedShown === shown.length;
+  selAll.indeterminate = selectedShown > 0 && selectedShown < shown.length;
+  selAll.disabled = shown.length === 0;
+
+  document.getElementById('sess-bulk-verbs').hidden = n === 0;
+  document.getElementById('new-session-btn').hidden = n > 0;
+
+  if (n > 0) {
+    // "still working" counts exactly the states the per-card rule confirms for —
+    // busy / waiting / reply — so the button says what the dialog would.
+    const live = sessions.filter(
+      (s) => sessSel.has(s.pid) && (s.derivedStatus || s.status) !== 'done'
+    ).length;
+    const btn = document.getElementById('sess-bulk-end');
+    btn.innerHTML = '';
+    btn.append(`⏹ End ${n}`, el('small', live ? `${live} still working` : 'all turns complete'));
+    btn.classList.toggle('danger', live > 0);
+  }
+
+  const q = sessFilter.trim();
+  document.getElementById('sess-count').textContent = sessions.length
+    ? (n > 0
+        ? `${n} selected · ${sessions.length} total`
+        : `${sessions.length} session${sessions.length === 1 ? '' : 's'}` +
+          (q || activeFilter !== 'all' ? ` · ${visible} shown` : ''))
+    : '';
+}
+
+document.getElementById('sess-selall').addEventListener('change', (e) => {
+  for (const card of grid.children) {
+    if (card.hidden) continue;
+    const pid = Number(card.id.slice('card-'.length));
+    if (e.target.checked) sessSel.add(pid); else sessSel.delete(pid);
+  }
+  if (lastData) render(lastData);
+});
+
+document.getElementById('sess-bulk-cancel').addEventListener('click', () => {
+  sessSel.clear();
+  if (lastData) render(lastData);
+});
+
+document.getElementById('sess-bulk-end').addEventListener('click', async () => {
+  const pids = [...sessSel];
+  if (!pids.length) return;
+  const sessions = (lastData && lastData.sessions) || [];
+  const live = sessions.filter((s) => sessSel.has(s.pid) && (s.derivedStatus || s.status) !== 'done');
+
+  // Same rule as the per-card End: a fully complete turn closes without asking;
+  // anything else loses context or in-progress work, so it confirms — once, for
+  // the whole selection, naming what is at stake.
+  if (live.length) {
+    const ok = await confirmBulk(
+      `End ${pids.length} session${pids.length === 1 ? '' : 's'}?`,
+      `${live.length} of them ${live.length === 1 ? 'is' : 'are'} still working or waiting on you ` +
+      `(${live.map((s) => s.project).join(', ')}). Ending kills the running turn and its context.`,
+      `End ${pids.length}`
+    );
+    if (!ok) return;
+  }
+
+  // Sequential on purpose: each end drives a real terminal through AppleScript,
+  // and firing a dozen at once makes the backend flaky.
+  let ended = 0;
+  const failed = [];
+  for (const pid of pids) {
+    try {
+      await post(`/api/sessions/${pid}/end`);
+      ended++;
+    } catch (err) {
+      const s = sessions.find((x) => x.pid === pid);
+      failed.push(`${s ? s.project : pid}`);
+    }
+  }
+  sessSel.clear();
+  if (failed.length) toast(`Ended ${ended} · ${failed.length} failed: ${failed.join(', ')}`);
+  else toast(`Ended ${ended} session${ended === 1 ? '' : 's'}`, true);
+});
 
 // ---------------------------------------------------------------- summary bar
 
@@ -529,14 +640,7 @@ function render(data) {
   empty.hidden = visible > 0 || sessions.length > 0;
   document.getElementById('sess-nomatch').hidden = !(sessions.length > 0 && visible === 0);
 
-  // The stat tiles keep counting what is actually running, so the toolbar has to
-  // say how much of that the filter is hiding — otherwise a narrow filter reads
-  // as sessions having disappeared.
-  const q = sessFilter.trim();
-  document.getElementById('sess-count').textContent = sessions.length
-    ? `${sessions.length} session${sessions.length === 1 ? '' : 's'}` +
-      (q || activeFilter !== 'all' ? ` · ${visible} shown` : '')
-    : '';
+  renderSessBulkBar(sessions, visible);
 
   const counts = updateStats(sessions);
 

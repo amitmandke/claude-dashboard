@@ -41,6 +41,19 @@
     <input id="sess-filter" type="search" autocomplete="off"
            placeholder="Find a session — title, repo, directory, prompt, pid…">
     <span id="sess-count" class="sess-count"></span>
+    <!-- same triage bar as the Candidates tab; one verb, because the only
+         destructive thing you can do to a session is end it -->
+    <div class="bulk-bar">
+      <span class="bulk-selall">
+        <input class="pick" id="sess-selall" type="checkbox"
+               title="Select every session the filter is showing">
+        <label for="sess-selall">All shown</label>
+      </span>
+      <div id="sess-bulk-verbs" class="bulk-verbs" hidden>
+        <button id="sess-bulk-end" class="bulk-btn danger"></button>
+        <button id="sess-bulk-cancel" class="ghost-btn">Cancel</button>
+      </div>
+    </div>
     <button id="new-session-btn" class="primary-btn">＋ New Session</button>
   </div>
 
@@ -141,6 +154,7 @@
       <div class="c-body">
         <div class="card-head">
           <div class="title-row">
+            <input class="pick sess-pick" type="checkbox" aria-label="Select this session">
             <span class="status-dot"></span>
             <span class="project"></span>
             <button class="rename-btn icon-btn" title="Rename this session (empty reverts to the auto title)">✎</button>
