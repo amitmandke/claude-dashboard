@@ -11,6 +11,15 @@ let titleFlasher = null;
 let activeFilter = 'all';
 let lastData = null;
 
+// Text filter for the Sessions grid. It composes with the stat-tile status
+// filter (AND, not replace) so "needs attention" + "orchestrator" is expressible.
+// Unlike the candidates filter this one survives a reload: the sessions tab is a
+// standing view you leave open, so re-typing the filter after every refresh is
+// the wrong default.
+const SESS_FILTER_KEY = 'claude-dashboard.sessionFilter';
+let sessFilter = '';
+try { sessFilter = localStorage.getItem(SESS_FILTER_KEY) || ''; } catch { /* private mode */ }
+
 const STATUS_LABELS = {
   busy: 'working',
   reply: 'awaiting your action',
@@ -407,7 +416,8 @@ function updateCard(card, s, now) {
 
   // show approve/deny only when blocked on a permission-style prompt
   card.querySelector('.quick-actions').hidden = st !== 'waiting';
-  card.hidden = activeFilter !== 'all' && st !== activeFilter;
+  card.hidden = (activeFilter !== 'all' && st !== activeFilter) ||
+                !sessionMatches(s, sessFilter.trim().toLowerCase());
 
   // observe-only when the hosting terminal has no interaction backend
   const interactive = !!s.terminal;
@@ -436,6 +446,40 @@ function updateStats(sessions) {
   document.querySelector('.stat-waiting').classList.toggle('flashing', counts.waiting > 0);
   return counts;
 }
+
+// ---------------------------------------------------------------- text filter
+
+// Substring match across what identifies a session: the card's title, its repo
+// folder and full path, the pid, and the prompt it was started with. The first
+// prompt is in there deliberately — an AI title drifts from the ask that opened
+// the session, so "the one I launched to clone to rel" has to stay findable.
+// The live reply text is NOT matched: it would produce hits with no visible
+// cause on a collapsed card.
+function sessionMatches(s, q) {
+  if (!q) return true;
+  // firstPrompt is {text, at} — not a string; joining the object itself puts a
+  // literal "[object Object]" in every haystack (so "object" would match all).
+  const hay = [s.title, s.customTitle, s.aiTitle, s.project, s.cwd, s.firstPrompt?.text, String(s.pid)]
+    .filter(Boolean).join(' ').toLowerCase();
+  return hay.includes(q);
+}
+
+const sessFilterEl = document.getElementById('sess-filter');
+sessFilterEl.value = sessFilter;
+sessFilterEl.addEventListener('input', () => {
+  sessFilter = sessFilterEl.value;
+  try { localStorage.setItem(SESS_FILTER_KEY, sessFilter); } catch { /* private mode */ }
+  if (lastData) render(lastData);
+});
+// Esc clears — but only from inside the input, so it can never be mistaken for
+// a card's ⎋ interrupt.
+sessFilterEl.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || !sessFilterEl.value) return;
+  e.preventDefault();
+  e.stopPropagation();
+  sessFilterEl.value = '';
+  sessFilterEl.dispatchEvent(new Event('input'));
+});
 
 document.getElementById('stats').addEventListener('click', (e) => {
   const tile = e.target.closest('.stat');
@@ -478,8 +522,21 @@ function render(data) {
     for (const id of desired) grid.appendChild(document.getElementById(id));
   }
 
+  // Two different "nothing here" states: no sessions at all (tells you how to
+  // start one) vs a filter that matched none (telling you to run `claude` there
+  // would be wrong advice).
   const visible = [...grid.children].filter((c) => !c.hidden).length;
-  empty.hidden = visible > 0;
+  empty.hidden = visible > 0 || sessions.length > 0;
+  document.getElementById('sess-nomatch').hidden = !(sessions.length > 0 && visible === 0);
+
+  // The stat tiles keep counting what is actually running, so the toolbar has to
+  // say how much of that the filter is hiding — otherwise a narrow filter reads
+  // as sessions having disappeared.
+  const q = sessFilter.trim();
+  document.getElementById('sess-count').textContent = sessions.length
+    ? `${sessions.length} session${sessions.length === 1 ? '' : 's'}` +
+      (q || activeFilter !== 'all' ? ` · ${visible} shown` : '')
+    : '';
 
   const counts = updateStats(sessions);
 

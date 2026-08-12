@@ -50,7 +50,7 @@ creating the window — creating a window mid-launch fails with opaque AppleEven
 | App | Folder | Tech | Role |
 |---|---|---|---|
 | dashboard-server | `server/` | Node.js ≥18, no deps | Scans registry + transcripts, pushes live state over SSE, drives iTerm2 (send input, focus panes, launch new sessions), and runs the Slack watcher poll loop (candidate producer, see §5) |
-| dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Three in-page tabs (Sessions / Candidates / Watchers): summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog; the Candidates tab lists launchable pending work with a text filter; the Watchers tab shows each watcher's live state with Pause/Resume/Run-now, global Stop-all/Start-all, and create/edit/delete via a trigger-picker + staged editor dialog |
+| dashboard-web | `web/` | Vanilla HTML/CSS/JS, no build step | Three in-page tabs (Sessions / Candidates / Watchers): session search + summary bar with filters, session cards, flashing alerts, quick actions, composer, New Session dialog; the Candidates tab lists launchable pending work with a text filter; the Watchers tab shows each watcher's live state with Pause/Resume/Run-now, global Stop-all/Start-all, and create/edit/delete via a trigger-picker + staged editor dialog |
 
 A single `node server/src/index.js` runs everything; the web app is static files served
 by the same process. `scripts/install-launchd.sh` installs it as a macOS launchd user
@@ -63,8 +63,9 @@ the fact.
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────────────┐
-│ Claude Dashboard  [Sessions][Candidates ③]  [🌙]                    [＋ New Session]  │
+│ Claude Dashboard  [Sessions ⑤][Candidates ③][Watchers]                        [🌙]  │
 ├──────────────────────────────────────────────────────────────────────────────────────┤
+│ [ Find a session — title, repo, directory, prompt, pid… ]  5 sessions [＋ New Session]│
 │ ┌────────────────┬─────────┬────────────────┬──────────────────────┬───────────────┐ │
 │ │ 4              │ 1       │ 1              │ 1                    │ 1             │ │
 │ │ Total sessions │ Working │ Need attention │ Awaiting your action │ Turn complete │ │
@@ -140,9 +141,27 @@ inside a card (moving a DOM node would drop focus mid-typing); it catches up on 
 tick after focus leaves. The browser tab title also flashes
 (`🔴 1 waiting — Claude Dashboard`) so you see it from any other tab.
 
-### Summary bar (top of page)
+### Finding a session (top of the Sessions tab)
 
-Clickable stat tiles, doubling as filters for the grid (click again to clear). The
+Two filters that **compose** — a status and a substring, ANDed, so "the waiting one in
+the orchestrator repo" is expressible. The toolbar mirrors the Candidates tab's:
+
+```
+┌────────────────────────────────────────────┐
+│ Find a session — title, repo, directory, … │  5 sessions · 2 shown   [＋ New Session]
+└────────────────────────────────────────────┘
+```
+
+The text matches what *identifies* a session: card title (custom / AI / terminal), repo
+folder, full path, pid, and **the prompt it was started with**. The starting prompt is in
+the haystack deliberately — an AI title summarizes the session's primary task and drifts
+from the words you opened it with, so without it "the one I launched to clone to rel" is
+unfindable. The live reply text is deliberately *not* matched: it would produce hits with
+no visible cause on a collapsed card. The filter persists across reloads
+(`localStorage`), because Sessions is a standing view left open in a tab; Esc clears it
+from inside the input only, where it can't be confused with a card's ⎋ interrupt.
+
+Below it, clickable stat tiles double as status filters (click again to clear). The
 "Need attention" tile flashes red (same animation as `waiting` cards) whenever its
 count is above zero:
 
@@ -152,6 +171,11 @@ count is above zero:
 │ Total    │ Working │ Need attention │ Awaiting your action │ Turn complete │
 └──────────┴─────────┴────────────────┴──────────────────────┴───────────────┘
 ```
+
+The tiles keep counting what is actually **running**, never what survived the filter —
+so the toolbar carries the `N sessions · M shown` readout instead, or a narrow filter
+reads as sessions having vanished. Same reason the grid has two distinct empty states:
+"no sessions to show" (with how to start one) versus "no sessions match your filter".
 
 ### Quick actions (shown only on a `waiting` card)
 
