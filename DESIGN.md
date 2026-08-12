@@ -286,9 +286,21 @@ no floating action bar arriving from off-screen:
                                    keeps them 7d   permanent
 ```
 
-- **`☑ All shown` takes exactly what the filter is showing** — which is why there are no
-  separate "Dismiss all" / "Clear all" buttons. Clearing the filter and ticking All shown
-  is the same two clicks, and it can never reach a card you have not seen and counted.
+- **`☑ All shown` takes exactly what the filters are showing** — which is why there are no
+  separate "Dismiss all" / "Clear all" buttons. Picking a status and ticking All shown is
+  the same two clicks, and it can never reach a card you have not seen and counted.
+- **Two filters compose here as they do on Sessions**: a `.seg` status control
+  (`All / Pending / Launched / Dismissed`, each with its count from the *whole* list, click
+  again to clear) ANDed with the text box. That pairing is what makes "clear every dismissed
+  one" expressible — pick Dismissed, tick All shown, Clear. Status is a separate filter and
+  deliberately **not** another word in the text haystack: a card whose prompt happens to say
+  "dismissed" must not answer to the Dismissed chip, or All shown would take something you
+  were not looking at.
+- **A selection survives a filter change on purpose** — narrow, select, narrow again, act
+  once. The cost is that part of it can be off-screen, so the readout says
+  `12 selected (5 hidden by the filter)`, and Clear's confirmation repeats it. The
+  alternative, wiping the selection whenever the filter moves, would make a
+  multi-search sweep impossible.
 - **The verbs carry their consequence** (`keeps them 7 days` / `permanent`). Dismiss and
   Clear read almost identically as icons; at a dozen cards a time, picking the wrong one is
   the failure worth designing against, so the outcome sits on the button rather than

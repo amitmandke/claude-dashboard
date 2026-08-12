@@ -122,6 +122,15 @@
       </div>
       <button id="new-candidate-btn" class="primary-btn">＋ New candidate</button>
     </div>
+    <!-- status filter: the Candidates counterpart of the Sessions stat tiles.
+         ANDs with the text filter above, and "All shown" selects whatever the
+         pair of them leaves — which is how "clear every dismissed one" works. -->
+    <nav id="cand-status" class="cand-status seg" aria-label="Filter by status">
+      <button data-status="all" class="on">All <span class="seg-n"></span></button>
+      <button data-status="pending">Pending <span class="seg-n"></span></button>
+      <button data-status="launched">Launched <span class="seg-n"></span></button>
+      <button data-status="dismissed">Dismissed <span class="seg-n"></span></button>
+    </nav>
     <main id="cand-grid"></main>
     <div id="cand-empty" class="empty" hidden>
       No candidates yet.<br>
