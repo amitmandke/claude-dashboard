@@ -161,6 +161,25 @@ no visible cause on a collapsed card. The filter persists across reloads
 (`localStorage`), because Sessions is a standing view left open in a tab; Esc clears it
 from inside the input only, where it can't be confused with a card's ⎋ interrupt.
 
+Session cards carry the same select box as candidate cards, and selecting turns this
+toolbar into the same triage bar — with one verb, since ending is the only destructive
+thing you can do to a session:
+
+```
+[ Find a session — alkiranet ]  4 selected · 5 total
+                    ☑ All shown  [⏹ End 4          ] [Cancel]
+                                  2 still working
+```
+
+The count of sessions that are **not** `done` rides on the button rather than waiting in
+the dialog — you should know the cost before committing to read a confirmation. The
+existing per-card rule then carries over unchanged: a fully complete turn closes without
+asking, anything else confirms — once, for the whole selection, naming the projects at
+stake. Ends run **sequentially**, because each one drives a real terminal through
+AppleScript and a dozen at once makes that backend flaky. A selected card keeps its
+status border (red = waiting, green = working) and gains only the accent rail, so you can
+still see what you are about to end.
+
 Below it, clickable stat tiles double as status filters (click again to clear). The
 "Need attention" tile flashes red (same animation as `waiting` cards) whenever its
 count is above zero:
