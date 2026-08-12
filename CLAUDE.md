@@ -222,6 +222,11 @@ a function testable, export it (several are exported solely for tests, noted as 
   anything else confirms. A picked session card gets the accent rail **only** — never an accent
   border, which would overwrite the status border (red = waiting, green = working) that tells you
   what you are about to kill.
+- **`shownCandidates()` is the ONE definition of what is on screen — never re-inline it.** The grid,
+  `☑ All shown`, and the hidden-count disclosure must agree on the visible set. They were three
+  separate filter expressions for one commit, and the select-all copy was missing the status clause,
+  so picking a status and ticking All shown selected the **entire board** — the exact thing the whole
+  "all means only what you can see" design exists to prevent. One function, three callers.
 - **Candidate status is a filter, never a word in the text haystack.** `candStatus` (the `.seg`
   chips) ANDs with `candFilter`; `candMatches` must stay status-free, or a card whose *prompt*
   says "dismissed" would answer to the Dismissed chip and `☑ All shown` → Clear would take
