@@ -106,20 +106,42 @@ function reRequestedWithoutCommits(pr) {
 }
 
 /**
+ * Has somebody else taken this review off my hands?
+ *
+ * The rule is ownership by first reviewer (Amit's, 2026-08-20): if I have never
+ * reviewed a PR and another reviewer has already taken a position on it, that
+ * reviewer owns the round — *including* the author's follow-up pushes, which is
+ * why this deliberately does NOT ask whether their verdict still covers the tip.
+ * Half of the real cases are exactly that shape (a CHANGES_REQUESTED, then the
+ * author pushes the fix); following those is the other reviewer's job.
+ *
+ * The converse is the load-bearing half: once I have reviewed, the PR is mine to
+ * take to closure and no number of other approvals releases me — hence the early
+ * return on `myLastReviewAt`.
+ */
+function pickedUpByOthers(pr) {
+  if (!pr || pr.myLastReviewAt) return false;
+  return ((pr && pr.otherReviewers) || []).length > 0;
+}
+
+/**
  * Does this PR still want *my* review?
  *
  * `--review-requested=@me` does NOT exclude PRs I have already reviewed (2 of 27
  * in the real queue were), so filter explicitly:
  *
+ *   - picked up by someone else -> skip    (see pickedUpByOthers)
  *   - never reviewed by me      -> include
  *   - reviewed, new commits     -> include (re-review, the code moved)
  *   - reviewed, re-requested    -> include (re-review, the conversation moved)
  *   - reviewed, nothing new     -> skip
  *
- * Other reviewers are deliberately never consulted: whether someone else
- * approved says nothing about whether my review is outstanding.
+ * The last line is why this is also the retirement test (`retireSettled`): a card
+ * staged legitimately and then reviewed goes quiet here the moment I submit, and
+ * comes back on its own when the author's next push mints a new dedupe key.
  */
 function needsMyReview(pr) {
+  if (pickedUpByOthers(pr)) return false;
   if (!pr || !pr.myLastReviewAt) return true;
   if (reReviewRequested(pr)) return true;
   if (!pr.tipCommittedDate) return false; // reviewed, and we can't prove anything changed
@@ -456,6 +478,50 @@ function retireSuspects(pending, queueKeys) {
  * lost) keeps the card: leaving a stale card costs a click, deleting a live one
  * silently loses work someone is waiting on.
  */
+/**
+ * Pending cards this tick's queue says are settled — nothing on them wants me.
+ *
+ * This is the second retirement path, and it exists because the first one cannot
+ * see these. `retireSuspects` reasons from ABSENCE, but a settled PR is usually
+ * still in the queue: `reviewed-by:@me` keeps returning one I reviewed, and
+ * `review-requested:@me` keeps returning one another reviewer picked up. So the
+ * card sat on the board with the queue in hand and the answer already computed.
+ *
+ * Costs no GitHub call — it re-reads the PRs this pass already fetched.
+ *
+ * Conservative on both edges: a card with a PR MISSING from the queue is left to
+ * the absence path (which confirms terminal states against GitHub before
+ * deleting), and the test is `needsMyReview` alone — never the draft or
+ * author-policy filters, so flipping `skipDrafts` or `excludeAuthors` can tidy
+ * what stages but can never delete a card someone is waiting on.
+ */
+function retireSettled(pending, queue) {
+  const byKey = new Map();
+  for (const pr of queue || []) {
+    if (pr && pr.repo && pr.number) byKey.set(`${pr.repo}#${pr.number}`, pr);
+  }
+  return (pending || []).filter((c) => {
+    const refs = (c.ref && c.ref.prRefs) || [];
+    if (!refs.length) return false; // nothing to check against — never touch it
+    return refs.every((r) => {
+      const pr = byKey.get(`${r.repo}#${r.number}`);
+      return pr ? !needsMyReview(pr) : false;
+    });
+  });
+}
+
+/**
+ * Why a settled card is being retired, for the log — the distinction matters
+ * when reading back a board that emptied itself.
+ */
+function settledReason(pr) {
+  if (!pr) return 'unknown';
+  if (pickedUpByOthers(pr)) {
+    return 'picked-up-by=' + pr.otherReviewers.map((r) => r.login).join(',');
+  }
+  return 'reviewed=' + String(pr.myLastReviewAt || '').slice(0, 10);
+}
+
 function shouldRetire(candidate, states) {
   const refs = (candidate.ref && candidate.ref.prRefs) || [];
   if (!refs.length) return false;
@@ -468,6 +534,9 @@ function shouldRetire(candidate, states) {
 module.exports = {
   retireSuspects,
   shouldRetire,
+  retireSettled,
+  settledReason,
+  pickedUpByOthers,
   extractJiraKeys,
   storyKeysOf,
   refOf,

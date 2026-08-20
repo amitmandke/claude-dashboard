@@ -35,6 +35,7 @@ query($q: String!, $me: String!, $first: Int!) {
         repository { nameWithOwner }
         commits(last: 1) { nodes { commit { oid committedDate } } }
         reviews(author: $me, last: 1) { nodes { submittedAt state } }
+        latestOpinionatedReviews(first: 20) { nodes { author { login } state submittedAt } }
         timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT, REVIEW_REQUEST_REMOVED_EVENT], last: 20) {
           nodes {
             __typename
@@ -100,6 +101,28 @@ function myReviewRequestedAt(n, me) {
 }
 
 /**
+ * Reviewers OTHER than me who have taken a position on this PR — the signal for
+ * "somebody else picked this up".
+ *
+ * `latestOpinionatedReviews` is the right field, not `reviews`: it returns each
+ * reviewer's newest APPROVED / CHANGES_REQUESTED only, so a chatty thread of
+ * COMMENTED reviews — which is conversation, not a verdict — never reads as a
+ * handover, and the node stays small on a 50-PR queue. My own review arrives in
+ * this list too and is dropped here; `myLastReviewAt` is the field for that.
+ */
+function otherReviewers(n, me) {
+  const login = String(me || '').toLowerCase();
+  const out = [];
+  for (const r of (n.latestOpinionatedReviews && n.latestOpinionatedReviews.nodes) || []) {
+    const who = (r && r.author && r.author.login) || '';
+    if (!who || who.toLowerCase() === login) continue;
+    if (!r.submittedAt) continue; // PENDING: started, never submitted — no verdict
+    out.push({ login: who, state: r.state || '', submittedAt: r.submittedAt });
+  }
+  return out;
+}
+
+/**
  * Flatten one GraphQL node into the flat shape `reviews.js` expects. A review
  * with a null `submittedAt` is PENDING (started, never submitted) and must read
  * as "not reviewed", which falling through to null achieves.
@@ -122,6 +145,7 @@ function normalizeNode(n, me) {
     myLastReviewAt: (review && review.submittedAt) || null,
     myLastReviewState: (review && review.state) || '',
     myReviewRequestedAt: myReviewRequestedAt(n, me),
+    otherReviewers: otherReviewers(n, me),
   };
 }
 

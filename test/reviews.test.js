@@ -621,6 +621,7 @@ test('parseQueue: flattens the GraphQL shape into flat PRs', () => {
     myLastReviewAt: '2026-08-08T10:00:00Z',
     myLastReviewState: 'CHANGES_REQUESTED',
     myReviewRequestedAt: null,
+    otherReviewers: [],
   });
 });
 
@@ -854,4 +855,129 @@ test('parseStates: a } inside a PR title cannot truncate the response early', ()
 
 test('parseStates: genuinely unusable output still throws rather than retiring nothing quietly', () => {
   assert.throws(() => gh.parseStates('gh: command failed\n', [{ repo: 'a/b', number: 1 }]), /non-JSON/);
+});
+
+// --- ownership by first reviewer (Amit, 2026-08-20) ------------------------
+// Every case below is a real shape off the live queue on the day the rule landed:
+// of 14 PRs another reviewer had weighed in on, 7 carried a CHANGES_REQUESTED the
+// author had already pushed past. Following those is the other reviewer's job.
+
+const opinion = (login, state = 'APPROVED', at = '2026-08-20T18:26:00Z') => ({
+  login, state, submittedAt: at,
+});
+
+test('pickedUpByOthers: another reviewer with a verdict takes an unreviewed PR', () => {
+  const pr = { repo: 'acme/rm', number: 1, myLastReviewAt: null, otherReviewers: [opinion('sneha')] };
+  assert.equal(reviews.pickedUpByOthers(pr), true);
+  assert.equal(reviews.needsMyReview(pr), false);
+});
+
+test('pickedUpByOthers: a stale verdict still counts — the author push is theirs to follow', () => {
+  // snehachandrak requested changes 18:26, author pushed 21:01 (aws-resource-gateway#308).
+  const pr = {
+    repo: 'acme/rm', number: 308, myLastReviewAt: null,
+    tipCommittedDate: '2026-08-20T21:01:00Z',
+    otherReviewers: [opinion('sneha', 'CHANGES_REQUESTED', '2026-08-20T18:26:00Z')],
+  };
+  assert.equal(reviews.needsMyReview(pr), false);
+});
+
+test('pickedUpByOthers: my own prior review outranks any number of others', () => {
+  // The load-bearing converse: once I have reviewed, it is mine to take to closure.
+  const pr = {
+    repo: 'acme/rm', number: 2, myLastReviewAt: '2026-08-19T10:00:00Z',
+    tipCommittedDate: '2026-08-20T09:00:00Z',
+    otherReviewers: [opinion('sneha'), opinion('benjamin')],
+  };
+  assert.equal(reviews.pickedUpByOthers(pr), false);
+  assert.equal(reviews.needsMyReview(pr), true, 'new commits on a PR I reviewed still want me');
+});
+
+test('pickedUpByOthers: nobody else has a verdict — a fresh ask is still mine', () => {
+  assert.equal(reviews.pickedUpByOthers({ myLastReviewAt: null, otherReviewers: [] }), false);
+  assert.equal(reviews.pickedUpByOthers({ myLastReviewAt: null }), false, 'field absent (older cache)');
+  assert.equal(reviews.needsMyReview({ myLastReviewAt: null, otherReviewers: [] }), true);
+});
+
+test('selectPrs: a picked-up PR never stages in the first place', () => {
+  const mine = { repo: 'acme/rm', number: 1, myLastReviewAt: null, otherReviewers: [] };
+  const theirs = { repo: 'acme/rm', number: 2, myLastReviewAt: null, otherReviewers: [opinion('sneha')] };
+  assert.deepEqual(reviews.selectPrs([mine, theirs]).map((p) => p.number), [1]);
+});
+
+test('retireSettled: retires a card I have since reviewed, and one picked up', () => {
+  const reviewedByMe = { repo: 'acme/rm', number: 1, myLastReviewAt: '2026-08-20T18:17:00Z', tipCommittedDate: '2026-08-20T16:05:00Z' };
+  const takenByOther = { repo: 'acme/rm', number: 2, myLastReviewAt: null, otherReviewers: [opinion('benjamin')] };
+  const stillMine = { repo: 'acme/rm', number: 3, myLastReviewAt: null, otherReviewers: [] };
+  const queue = [reviewedByMe, takenByOther, stillMine];
+
+  const a = card([{ repo: 'acme/rm', number: 1 }]);
+  const b = card([{ repo: 'acme/rm', number: 2 }]);
+  const c = card([{ repo: 'acme/rm', number: 3 }]);
+
+  assert.deepEqual(reviews.retireSettled([a, b, c], queue).map((x) => x.id), [a.id, b.id]);
+});
+
+test('retireSettled: a grouped card needs EVERY PR settled', () => {
+  const done = { repo: 'acme/rm', number: 1, myLastReviewAt: null, otherReviewers: [opinion('sneha')] };
+  const open = { repo: 'acme/rm', number: 2, myLastReviewAt: null, otherReviewers: [] };
+  const story = card([{ repo: 'acme/rm', number: 1 }, { repo: 'acme/rm', number: 2 }]);
+  assert.deepEqual(reviews.retireSettled([story], [done, open]), []);
+});
+
+test('retireSettled: a PR absent from the queue is left to the merged/closed path', () => {
+  // Absence is not settlement — a withdrawn request drops an OPEN PR out too, and
+  // deleting on absence alone is what the batched prStates confirm exists to stop.
+  const story = card([{ repo: 'acme/rm', number: 1 }, { repo: 'acme/rm', number: 9 }]);
+  const queue = [{ repo: 'acme/rm', number: 1, myLastReviewAt: null, otherReviewers: [opinion('sneha')] }];
+  assert.deepEqual(reviews.retireSettled([story], queue), []);
+});
+
+test('retireSettled: a card with no PR refs is never touched', () => {
+  assert.deepEqual(reviews.retireSettled([card([], { ref: { watcher: 'reviews' } })], []), []);
+  assert.deepEqual(reviews.retireSettled([], []), []);
+});
+
+test('settledReason: says which rule fired, for reading the log back', () => {
+  assert.equal(
+    reviews.settledReason({ myLastReviewAt: null, otherReviewers: [opinion('sneha'), opinion('moiz')] }),
+    'picked-up-by=sneha,moiz'
+  );
+  assert.equal(
+    reviews.settledReason({ myLastReviewAt: '2026-08-20T18:17:00Z' }),
+    'reviewed=2026-08-20'
+  );
+  assert.equal(reviews.settledReason(undefined), 'unknown');
+});
+
+test('parseQueue: other reviewers arrive, mine and PENDING ones filtered out', () => {
+  const { prs } = gh.parseQueue(
+    JSON.stringify({
+      data: { search: { issueCount: 1, nodes: [{
+        number: 308, repository: { nameWithOwner: 'acme/rm' },
+        commits: { nodes: [{ commit: { oid: 'abc', committedDate: '2026-08-20T21:01:00Z' } }] },
+        reviews: { nodes: [] },
+        latestOpinionatedReviews: { nodes: [
+          { author: { login: 'snehachandrak' }, state: 'CHANGES_REQUESTED', submittedAt: '2026-08-20T18:26:00Z' },
+          { author: { login: 'amitmandke' }, state: 'APPROVED', submittedAt: '2026-08-20T19:00:00Z' },
+          { author: { login: 'halfway' }, state: 'PENDING', submittedAt: null },
+          { author: null, state: 'APPROVED', submittedAt: '2026-08-20T19:00:00Z' },
+        ] },
+      }] } },
+    }),
+    'amitmandke'
+  );
+  assert.deepEqual(prs[0].otherReviewers, [
+    { login: 'snehachandrak', state: 'CHANGES_REQUESTED', submittedAt: '2026-08-20T18:26:00Z' },
+  ]);
+});
+
+test('parseQueue: no opinionated-reviews field yields an empty list, not undefined', () => {
+  const { prs } = gh.parseQueue(
+    JSON.stringify({ data: { search: { issueCount: 1, nodes: [{
+      number: 1, repository: { nameWithOwner: 'acme/rm' }, commits: { nodes: [] }, reviews: { nodes: [] },
+    }] } } }),
+    'amitmandke'
+  );
+  assert.deepEqual(prs[0].otherReviewers, []);
 });

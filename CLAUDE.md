@@ -199,7 +199,24 @@ a function testable, export it (several are exported solely for tests, noted as 
   request drops an open PR out too — and an *unresolved* lookup must keep the card: a stale card costs
   a click, deleting a live one loses work someone is waiting on. Capped at `RETIRE_MAX_PER_TICK` with
   the overflow logged (never a silent cap), and the whole pass is wrapped so cleanup can't fail a tick
-  that already staged.
+  that already staged; **(g)** retirement by absence cannot see the commonest death of a card —
+  *you reviewed it*. `reviewed-by:@me` keeps returning that PR and a PR someone else picked up stays
+  in `review-requested:@me`, so both remain in the queue while wanting nothing from you. Hence the
+  **settled** sweep (`reviews.retireSettled` → `settledReason`), run before the suspects and costing
+  no GitHub call: a pending card whose PRs are ALL in this pass's queue and none of which
+  `needsMyReview` is removed. A card with any PR *missing* from the queue is left to the absence path,
+  and the test is `needsMyReview` alone — never the draft/author filters, so config changes can alter
+  what stages but never delete a card someone awaits. Safe to fire early because the dedupe key embeds
+  the tip commit: the author's next push mints a new key and the card returns. The log separates
+  `settled=` from `retired=`; **(h)** **ownership is by first reviewer** (Amit's rule, 2026-08-20):
+  never reviewed by you + another reviewer has a verdict → *theirs*, skip; you have reviewed it → yours
+  to take to closure, and no number of other approvals releases you. Use
+  `latestOpinionatedReviews` (newest APPROVED/CHANGES_REQUESTED per reviewer, minus your own), NOT
+  `reviews` — a thread of COMMENTED reviews is conversation and would read as a handover it is not. Do
+  NOT add a "does their verdict still cover the tip commit" guard: 7 of 14 real cases are a
+  CHANGES_REQUESTED the author has since pushed past, and following that fix is the other reviewer's
+  job. This rule also runs at *selection*, so such PRs never stage at all — that is what stops the
+  stage/settle churn.
 - **Never spawn `claude` by bare name — resolve it.** `config.resolveClaudeBin()` probes
   `CLAUDE_DASH_CLAUDE_BIN` → `~/.local/bin/claude` (native installer symlink) → `which` → the
   legacy `~/.claude/local/claude`. The launchd plist pins a minimal PATH that does **not**
