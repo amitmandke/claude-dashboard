@@ -2630,3 +2630,113 @@ test('retire: a failing state lookup does not fail the pass', async () => {
   assert.ok(r, 'the pass still returns its summary');
   assert.equal(store.items.length, 1, 'nothing removed on a failed lookup');
 });
+
+// --- settled cards: retired from the queue this pass already fetched ---------
+
+test('settle: a card retires once I have reviewed it, with no state lookup at all', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+
+  await loop.runGithubWatcherOnce(w, {
+    ...base,
+    ghClient: ghStubWithStates([ghPr({ number: 910, tipOid: 'aaa1' })], {}),
+  });
+  assert.equal(store.items.length, 1);
+  store.items[0].ref.watcher = w.name;
+
+  // I reviewed it after the tip commit. `reviewed-by:@me` keeps returning it, so
+  // absence-based retirement can never see this — the settled pass must.
+  const gh2 = ghStubWithStates(
+    [ghPr({ number: 910, tipOid: 'aaa1', myLastReviewAt: '2026-08-09T18:00:00Z' })],
+    {}
+  );
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: gh2 });
+
+  assert.equal(store.items.length, 0, 'reviewed-and-quiet card should settle');
+  assert.deepEqual(gh2.asked, [], 'settling costs no prStates call');
+});
+
+test('settle: a card retires when another reviewer picks the PR up', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+
+  await loop.runGithubWatcherOnce(w, {
+    ...base,
+    ghClient: ghStubWithStates([ghPr({ number: 911, tipOid: 'aaa1' })], {}),
+  });
+  store.items[0].ref.watcher = w.name;
+
+  const takenOver = ghPr({
+    number: 911, tipOid: 'aaa1',
+    otherReviewers: [{ login: 'sneha', state: 'APPROVED', submittedAt: '2026-08-09T18:00:00Z' }],
+  });
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStubWithStates([takenOver], {}) });
+
+  assert.equal(store.items.length, 0, 'picked-up card should settle');
+});
+
+test('settle: a PR I reviewed and someone else approved is still mine — card stays', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+
+  // I reviewed at 10:00, the author pushed at 12:00 — mine to take to closure,
+  // and another approval does not release me.
+  const live = ghPr({
+    number: 912, tipOid: 'bbb2',
+    myLastReviewAt: '2026-08-09T10:00:00Z',
+    tipCommittedDate: '2026-08-09T12:00:00Z',
+    otherReviewers: [{ login: 'sneha', state: 'APPROVED', submittedAt: '2026-08-09T13:00:00Z' }],
+  });
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStubWithStates([live], {}) });
+  assert.equal(store.items.length, 1, 're-review on a PR I own must still stage');
+  store.items[0].ref.watcher = w.name;
+
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStubWithStates([live], {}) });
+  assert.equal(store.items.length, 1, 'and must not be settled away');
+});
+
+test('settle: never touches another watcher, another source, or launched history', async () => {
+  state._reset();
+  const w = ghW();
+  const store = memStore();
+  const base = {
+    resolveRepo: () => '/c/x', detectStack: () => 'java', candidates: store,
+    retention: { threadTtlMs: 1e9, seenTtlMs: 1e9, maxThreads: 50 },
+  };
+
+  await loop.runGithubWatcherOnce(w, {
+    ...base,
+    ghClient: ghStubWithStates([ghPr({ number: 913, tipOid: 'aaa1' })], {}),
+  });
+  const mine = store.items[0];
+  mine.ref.watcher = w.name;
+  mine.status = 'launched'; // the user already ran it — that is history, not a card
+  store.items.push({
+    id: 'other-watcher', status: 'pending', source: 'github',
+    ref: { watcher: 'someone-else', prRefs: [{ repo: 'acme/java-svc', number: 913 }] },
+  });
+  store.items.push({
+    id: 'slack-card', status: 'pending', source: 'slack',
+    ref: { prRefs: [{ repo: 'acme/java-svc', number: 913 }] },
+  });
+
+  const settledPr = ghPr({ number: 913, tipOid: 'aaa1', myLastReviewAt: '2026-08-09T18:00:00Z' });
+  await loop.runGithubWatcherOnce(w, { ...base, ghClient: ghStubWithStates([settledPr], {}) });
+
+  assert.deepEqual(store.items.map((c) => c.id).sort(), [mine.id, 'other-watcher', 'slack-card'].sort());
+});

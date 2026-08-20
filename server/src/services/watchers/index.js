@@ -564,6 +564,29 @@ async function runGithubWatcherOnce(watcher, deps) {
   // an open PR out too), so the suspects are confirmed against GitHub in one
   // batched call, and only terminal states retire anything.
   let retired = 0;
+  let settled = 0;
+  // First, the free pass: cards this tick's queue says are settled. A card goes
+  // settled when I have since reviewed its PRs (the round is with the author) or
+  // another reviewer picked them up. Both are already answered by the data above,
+  // so this costs no GitHub call and runs before the batched confirm below —
+  // fewer suspects to look up, and the cap below then applies to the remainder.
+  try {
+    const mine = candidates.list().filter(
+      (c) => c.status === 'pending' && c.source === 'github' && c.ref && c.ref.watcher === name
+    );
+    const byKey = new Map(prs.map((pr) => [`${pr.repo}#${pr.number}`, pr]));
+    for (const c of reviews.retireSettled(mine, prs)) {
+      const how = (c.ref.prRefs || [])
+        .map((r) => `${r.repo}#${r.number}:${reviews.settledReason(byKey.get(`${r.repo}#${r.number}`))}`)
+        .join(' ');
+      candidates.remove(c.id);
+      settled++;
+      log(`ACTION watcher name=${name} note=settled id=${c.id} ${how}`);
+    }
+  } catch (e) {
+    log(`ERROR watcher name=${name} settle: ${e.message}`);
+  }
+
   try {
     const mine = candidates.list().filter(
       (c) => c.status === 'pending' && c.source === 'github' && c.ref && c.ref.watcher === name
@@ -595,7 +618,8 @@ async function runGithubWatcherOnce(watcher, deps) {
 
   log(
     `ACTION watcher name=${name} note=reviewed queue=${total} eligible=${plan.selected} ` +
-    `groups=${plan.groups} staged=${staged} suppressed=${plan.suppressed} retired=${retired}`
+    `groups=${plan.groups} staged=${staged} suppressed=${plan.suppressed} ` +
+    `settled=${settled} retired=${retired}`
   );
 
   if (retention) {

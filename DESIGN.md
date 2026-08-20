@@ -491,8 +491,7 @@ unit-tested logic:
   `repo#number`. The same rule then filters both: never reviewed → include; reviewed but the tip
   commit is newer than your review → include (*the code moved*); reviewed but your review was
   **re-requested** after you submitted it → include (*the conversation moved*); reviewed with
-  nothing new → skip. Other reviewers are never consulted — someone else approving says nothing
-  about whether *your* review is outstanding. Drafts and bot authors are excluded by default, and
+  nothing new → skip. Drafts and bot authors are excluded by default, and
   `includeAuthors` inverts the author filter so a second watcher can batch exactly the bot PRs
   the first one drops, with no code change.
 - **A re-request is a re-review, and commits cannot express it.** The common close to a review
@@ -507,6 +506,18 @@ unit-tested logic:
   three cases it is ("review requested" / "re-review, new commits" / "re-review requested"), and a
   re-request with no push adds a prompt line sending the session to the PR conversation rather than
   the diff — otherwise it diffs two identical trees and reports that nothing changed.
+- **Ownership belongs to the first reviewer.** Other reviewers were originally never consulted, on
+  the reasoning that someone else approving says nothing about whether *your* review is outstanding.
+  Living with the board disproved that: a review you never started and somebody else already took a
+  position on is *their* round, and the queue filled with PRs no one was waiting on you for. So the
+  rule is now ownership by first reviewer — **you have never reviewed it and another reviewer has a
+  verdict → skip**, and the converse, **you have reviewed it → it stays yours until it closes**, which
+  no number of other approvals releases. The signal is `latestOpinionatedReviews` (each reviewer's
+  newest `APPROVED`/`CHANGES_REQUESTED`, minus your own), deliberately *not* `reviews`: a thread of
+  `COMMENTED` reviews is conversation, not a verdict, and would read as a handover it isn't. Equally
+  deliberate is what is **not** checked — whether their verdict still covers the tip commit. Half of
+  the real cases (7 of 14 on the day this landed) are a `CHANGES_REQUESTED` the author has since
+  pushed past; following that fix is the other reviewer's job, not a fresh ask for you.
 - **Retiring finished work.** A pending card is replaced when a fresh snapshot supersedes it — but
   that only happens when something *stages*, and a merged PR leaves the search queue entirely, so
   nothing stages, nothing supersedes, and pending cards are exempt from retention pruning. The card
@@ -518,6 +529,20 @@ unit-tested logic:
   click while deleting a live one loses work someone is waiting on. The lookup is capped per pass and
   logs what it deferred; a failure there is logged and skipped rather than failing a pass that has
   already staged.
+- **Retiring settled work.** Absence-based retirement structurally cannot see the commonest way a
+  card dies: you *review* it. `reviewed-by:@me` keeps returning that PR, and a PR another reviewer
+  picked up keeps sitting in `review-requested:@me`, so both stay in the queue while wanting nothing
+  from you — and the card stayed on the board with the answer already in hand. So each pass first runs
+  a **settled** sweep: a pending card of this watcher whose PRs are *all present* in this pass's queue
+  and none of which `needsMyReview` is removed, for free, before the suspects above are looked up. It
+  costs no GitHub call because it re-reads what the pass already fetched. Two conservative edges: a
+  card with any PR **missing** from the queue is left entirely to the absence path, which confirms
+  terminal states before deleting; and the test is `needsMyReview` alone, never the draft or
+  author-policy filters, so flipping `skipDrafts` or `excludeAuthors` can change what *stages* but can
+  never delete a card someone is waiting on. Nothing is lost when this fires early — the dedupe key
+  embeds the tip commit, so the author's next push mints a new key and the card comes back by itself.
+  The tick log distinguishes `settled=` from `retired=`, and each removal names which rule fired
+  (`picked-up-by=sneha` / `reviewed=2026-08-20`).
 - **Story grouping.** Multiple PRs on one story are reviewed better together, so PRs citing a
   shared issue key become one candidate. Grouping is **key-centric, not transitive**: a group
   *is* the set of PRs citing one key, which guarantees every multi-PR group can be named and
