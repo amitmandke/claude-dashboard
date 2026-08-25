@@ -152,11 +152,35 @@ One Node process (`server/`) reads those sources, pushes snapshots to the browse
 SSE every 1.5 s, and injects keystrokes via `osascript`. The web app (`web/`) is static
 vanilla HTML/CSS/JS served by the same process.
 
+## Claude Code skills (optional)
+
+This repo is also a **Claude Code plugin marketplace**, so the knowledge needed to run
+and extend the dashboard is available to Claude itself rather than living in one
+person's head:
+
+```
+/plugin marketplace add amitmandke/claude-dashboard
+/plugin install manage-dashboard@claude-dashboard     # run it
+/plugin install develop-dashboard@claude-dashboard    # change it
+```
+
+Adding the marketplace installs nothing — it lists the catalog and you pick.
+
+| Skill | Use it for |
+|---|---|
+| **manage-dashboard** | Service lifecycle, deploys, watcher setup and health, candidates from the shell, reading the log — plus a read-only `doctor.sh` health report covering the server, the launchd agent, *which checkout it is running* and whether that is current, watcher status, and the log's error profile grouped by signature. |
+| **develop-dashboard** | Contributing: the repo map and the I/O-vs-pure-logic seam, the design-first workflow, `npm run test:coverage` (exactly the gate CI runs), and the accumulated traps that each cost real debugging time. |
+
+Neither skill needs the dashboard's code checked out to be installed; `manage-dashboard`
+works against any running install on `localhost:7777`.
+
 ## Layout
 
 ```
 claude-dashboard/
 ├── DESIGN.md                 component design, mockups, API contract
+├── .claude-plugin/           marketplace manifest (this repo is a plugin marketplace)
+├── plugins/                  manage-dashboard · develop-dashboard (Claude Code skills)
 ├── scripts/start.sh          start + open browser
 ├── server/                   backend service (zero-dep Node)
 │   └── src/

@@ -1,0 +1,22 @@
+{
+  "name": "claude-dashboard",
+  "description": "Skills for running and contributing to the Claude Dashboard \u2014 a local web dashboard for every Claude Code session on your machine.",
+  "owner": {
+    "name": "amitmandke",
+    "url": "https://github.com/amitmandke/claude-dashboard"
+  },
+  "plugins": [
+    {
+      "name": "manage-dashboard",
+      "source": "./plugins/manage-dashboard",
+      "category": "workflow",
+      "description": "Run the Claude Dashboard as a service: install, deploy, diagnose, read the log, and configure watchers and candidates."
+    },
+    {
+      "name": "develop-dashboard",
+      "source": "./plugins/develop-dashboard",
+      "category": "workflow",
+      "description": "Contribute to the Claude Dashboard: where each concern lives, the design-first discipline, the coverage gate, and the traps that cost real time."
+    }
+  ]
+}

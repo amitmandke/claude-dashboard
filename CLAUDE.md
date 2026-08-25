@@ -200,6 +200,26 @@ a function testable, export it (several are exported solely for tests, noted as 
   a click, deleting a live one loses work someone is waiting on. Capped at `RETIRE_MAX_PER_TICK` with
   the overflow logged (never a silent cap), and the whole pass is wrapped so cleanup can't fail a tick
   that already staged.
+- **This repo is also a plugin marketplace.** `.claude-plugin/marketplace.json` +
+  `plugins/<name>/{.claude-plugin/plugin.json,SKILL.md}` ship two skills: `manage-dashboard`
+  (operate an install — lifecycle, deploy, watcher health, candidates, plus a read-only
+  `scripts/doctor.sh`) and `develop-dashboard` (contribute — repo map, design-first
+  workflow, coverage gate, traps). A plugin folder IS the plugin root and a plugin with no
+  `skills/` subdir loads its root `SKILL.md` as its single skill. Bundled scripts are
+  referenced as `${CLAUDE_PLUGIN_ROOT}/scripts/…` — never a path outside the plugin
+  folder, since only the folder is copied on install. Validate with
+  `claude plugin validate .` (marketplace) and `claude plugin validate plugins/<name>`;
+  test for real with `claude plugin marketplace add <abs path>` + `plugin install`, then
+  `claude plugin details <name>` to see the skill inventory and token cost — and remove
+  both afterwards so a dev tree is never left registered as a marketplace. When behaviour
+  documented in a SKILL.md changes, update the skill in the same PR: they are living docs
+  like DESIGN.md, and a skill that lies is worse than no skill. **Verify every endpoint,
+  env var and flag a SKILL.md names against the code** — the first draft of
+  `manage-dashboard` invented `/run-now` (it is `/run`) and used the config keys
+  (`CANDIDATES_*`) rather than the env vars (`CLAUDE_DASH_*`).
+- **The coverage gate lives in `package.json`, not the workflow.** `npm run test:coverage`
+  carries the excludes and thresholds, and both CI jobs call it, so a contributor runs
+  exactly what CI runs and the two cannot drift.
 - **Never spawn `claude` by bare name — resolve it.** `config.resolveClaudeBin()` probes
   `CLAUDE_DASH_CLAUDE_BIN` → `~/.local/bin/claude` (native installer symlink) → `which` → the
   legacy `~/.claude/local/claude`. The launchd plist pins a minimal PATH that does **not**

@@ -26,20 +26,10 @@ jobs:
       # need a browser/network/real apps.
       - name: Run tests with coverage gate
         run: |
+          # The command lives in package.json so a contributor runs EXACTLY the gate
+          # CI runs (`npm run test:coverage`) and the two cannot drift.
           set -o pipefail
-          node --test --experimental-test-coverage --test-reporter=spec \
-            --test-coverage-exclude='test/**' \
-            --test-coverage-exclude='server/src/routes/**' \
-            --test-coverage-exclude='server/src/services/sessionRegistry.js' \
-            --test-coverage-exclude='server/src/services/projects.js' \
-            --test-coverage-exclude='server/src/services/skills.js' \
-            --test-coverage-exclude='server/src/services/terminals/**' \
-            --test-coverage-exclude='server/src/services/watchers/slack.js' \
-            --test-coverage-exclude='server/src/services/watchers/gh.js' \
-            --test-coverage-lines=80 \
-            --test-coverage-branches=68 \
-            --test-coverage-functions=78 \
-            | tee coverage.txt
+          npm run --silent test:coverage | tee coverage.txt
       - name: Coverage summary
         if: always()
         run: |
@@ -61,17 +51,10 @@ jobs:
           node-version: 24
       - name: Compute coverage and write the badge endpoint JSON
         run: |
+          # Same one script as the gate above — this job only runs after it passed,
+          # so the thresholds it carries are already satisfied.
           set -o pipefail
-          node --test --experimental-test-coverage --test-reporter=spec \
-            --test-coverage-exclude='test/**' \
-            --test-coverage-exclude='server/src/routes/**' \
-            --test-coverage-exclude='server/src/services/sessionRegistry.js' \
-            --test-coverage-exclude='server/src/services/projects.js' \
-            --test-coverage-exclude='server/src/services/skills.js' \
-            --test-coverage-exclude='server/src/services/terminals/**' \
-            --test-coverage-exclude='server/src/services/watchers/slack.js' \
-            --test-coverage-exclude='server/src/services/watchers/gh.js' \
-            | tee coverage.txt
+          npm run --silent test:coverage | tee coverage.txt
           pct=$(grep 'all files' coverage.txt | awk -F'|' '{gsub(/ /,"",$2); print int($2)}')
           if [ "$pct" -ge 80 ]; then color=brightgreen
           elif [ "$pct" -ge 60 ]; then color=yellow

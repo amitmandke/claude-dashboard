@@ -1,0 +1,8 @@
+{
+  "name": "manage-dashboard",
+  "version": "0.1.0",
+  "description": "Operate a Claude Dashboard install: service lifecycle, deploys, diagnosis, watchers, candidates.",
+  "author": { "name": "Amit Mandke", "url": "https://github.com/amitmandke" },
+  "homepage": "https://github.com/amitmandke/claude-dashboard",
+  "license": "MIT"
+}

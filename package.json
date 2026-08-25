@@ -11,7 +11,8 @@
   ],
   "scripts": {
     "start": "node server/src/index.js",
-    "test": "node --test"
+    "test": "node --test",
+    "test:coverage": "node --test --experimental-test-coverage --test-reporter=spec --test-coverage-exclude=test/** --test-coverage-exclude=server/src/routes/** --test-coverage-exclude=server/src/services/sessionRegistry.js --test-coverage-exclude=server/src/services/projects.js --test-coverage-exclude=server/src/services/skills.js --test-coverage-exclude=server/src/services/terminals/** --test-coverage-exclude=server/src/services/watchers/slack.js --test-coverage-exclude=server/src/services/watchers/gh.js --test-coverage-lines=80 --test-coverage-branches=68 --test-coverage-functions=78"
   },
   "engines": {
     "node": ">=18"

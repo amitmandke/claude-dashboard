@@ -1,0 +1,8 @@
+{
+  "name": "develop-dashboard",
+  "version": "0.1.0",
+  "description": "Develop the Claude Dashboard: repo map, design-first workflow, tests and coverage gate, known traps.",
+  "author": { "name": "Amit Mandke", "url": "https://github.com/amitmandke" },
+  "homepage": "https://github.com/amitmandke/claude-dashboard",
+  "license": "MIT"
+}
